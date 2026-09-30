@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+sqlalchemy
+pandas
+openpyxl
+xlrd
+httpx
+python-multipart
+psycopg[binary]
+tzdata
