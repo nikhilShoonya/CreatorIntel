@@ -17,6 +17,7 @@ import httpx
 
 from app.config.settings import Settings, get_settings
 from app.schemas.platform import ChannelProfile, CollectionError, ContentItem
+from app.services.api_usage import record_instagram_call, record_meta_usage
 from app.services.http_client import HttpRequestError, request_json
 from app.utils.logging import log_event
 from app.utils.text import caption_title
@@ -99,6 +100,8 @@ class InstagramCollector:
             headers={"Authorization": f"Bearer {self.settings.meta_access_token}"},
             should_retry=_should_retry,
             client=self.client,
+            on_attempt=record_instagram_call,
+            on_response=record_meta_usage,
         )
 
     def _translate_error(self, exc: HttpRequestError) -> CollectionError:

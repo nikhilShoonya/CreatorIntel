@@ -1,4 +1,4 @@
-"""YouTube quota usage counting (shared by both modules' YouTube clients)."""
+"""API usage counting: YouTube quota (both modules) and Instagram calls + Meta rate-limit headers."""
 
 import asyncio
 
@@ -67,3 +67,37 @@ def test_quota_endpoint_never_returns_keys(client):
     body = client.get("/api/config/youtube-quota").json()
     assert body["daily_limit_per_key"] == 10000 and body["keys"][0]["label"] == "Key 1"
     assert "test-youtube-key" not in str(body)
+
+
+def test_combined_youtube_total(client):
+    settings = get_settings().model_copy(update={"youtube_api_key": "test-youtube-key,second-key"})
+    quota = api_usage.youtube_quota(settings)
+    assert quota.key_count == 2 and quota.total_limit == 20000
+    assert quota.total_units == sum(k.units for k in quota.keys)
+    assert quota.percent == round(min(quota.total_units / 20000 * 100, 100), 1)
+
+
+def test_instagram_calls_and_meta_usage_headers(client):
+    api_usage.flush()
+    before = api_usage.instagram_usage().calls_today
+    response = httpx.Response(200, headers={
+        "x-app-usage": '{"call_count":12,"total_cputime":3,"total_time":5}',
+        "x-business-use-case-usage": '{"17841400000000000":[{"type":"instagram","call_count":41,'
+                                     '"total_cputime":2,"total_time":4,"estimated_time_to_regain_access":0}]}',
+    })
+    api_usage.record_instagram_call()
+    api_usage.record_meta_usage(response)
+    usage = api_usage.instagram_usage()
+    assert usage.calls_today == before + 1 and usage.percent == 41.0 and not usage.stale
+    api_usage.flush()
+    usage = api_usage.instagram_usage()  # read back from the database
+    assert usage.calls_today == before + 1 and usage.percent == 41.0
+    api_usage.record_meta_usage(httpx.Response(200, headers={"x-app-usage": "not json"}))  # ignored, no crash
+    assert api_usage.instagram_usage().percent == 41.0
+
+
+def test_usage_endpoint_never_returns_secrets(client):
+    body = client.get("/api/config/api-usage").json()
+    assert set(body) == {"youtube", "instagram"}
+    assert body["youtube"]["total_limit"] == body["youtube"]["daily_limit_per_key"] * body["youtube"]["key_count"]
+    assert "test-youtube-key" not in str(body) and "17841400000000000" not in str(body)

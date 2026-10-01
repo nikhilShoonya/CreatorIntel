@@ -1,15 +1,14 @@
 "use client";
 
 import { useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, Cpu, Database, SlidersHorizontal, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, SlidersHorizontal, XCircle } from "lucide-react";
 
-import { TokenStatusCard, YouTubeQuotaCard } from "@/components/layout/TokenHealth";
+import { InstagramUsageCard, TokenStatusCard, YouTubeQuotaCard } from "@/components/layout/TokenHealth";
 import { USER_NAME_KEY } from "@/components/layout/Topbar";
 import { Button, Card, ErrorBanner } from "@/components/ui/controls";
 import { PlatformIcon } from "@/components/ui/PlatformIcon";
 import { useConfigStatus } from "@/hooks/useData";
 import { useStoredValue } from "@/hooks/useStoredValue";
-import { API_URL } from "@/lib/api";
 
 function Integration({ icon, name, configured, detail, envVar }: { icon: ReactNode; name: string; configured: boolean; detail: string; envVar: string }) {
   return (
@@ -106,13 +105,7 @@ export default function SettingsPage() {
               envVar="META_ACCESS_TOKEN"
             />
             {config.instagram_configured && <TokenStatusCard />}
-            <Integration
-              icon={<Cpu size={22} className="text-slate-500" />}
-              name={`AI content analysis - Groq (${config.ai_model})`}
-              configured={config.ai_configured}
-              detail="Genre, language and sentiment classification with structured output."
-              envVar="GROQ_API_KEY"
-            />
+            {config.instagram_configured && <InstagramUsageCard />}
           </div>
         ) : (
           !error && <div className="h-40 animate-pulse" />
@@ -136,16 +129,6 @@ export default function SettingsPage() {
                 <dd className="font-medium text-ink">{value}</dd>
               </div>
             ))}
-            <div>
-              <dt className="text-muted">Database</dt>
-              <dd className="flex items-center gap-1.5 font-medium text-ink">
-                <Database size={14} /> {config.database}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted">Backend</dt>
-              <dd className="truncate font-medium text-ink">{API_URL}</dd>
-            </div>
           </dl>
         </Card>
       )}

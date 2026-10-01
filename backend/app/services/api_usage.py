@@ -8,6 +8,7 @@ API keys are identified by a short hash; the key itself is never stored.
 
 import asyncio
 import hashlib
+import json
 import logging
 import threading
 from datetime import datetime, time, timedelta, timezone
@@ -17,20 +18,79 @@ from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
-from app.config.settings import Settings
+from app.config.settings import Settings, get_settings
 from app.models.db import ReadSessionLocal, session_scope
-from app.models.usage import ApiUsage
+from app.models.usage import ApiRateStatus, ApiUsage
 from app.utils.logging import log_event
-from app.utils.time import utcnow
+from app.utils.time import as_utc, utcnow
 
 logger = logging.getLogger("creatorintel.api_usage")
 
 YOUTUBE = "youtube"
+INSTAGRAM = "instagram"
+META_WINDOW_MINUTES = 60  # Meta's platform rate limit is a rolling one-hour window
 QUOTA_TZ = ZoneInfo("America/Los_Angeles")  # YouTube quota resets at midnight Pacific Time
 FLUSH_EVERY_SECONDS = 20
 
 _pending: dict[tuple[str, str, str], list] = {}  # (day, service, fingerprint) -> [units, calls, exceeded_at]
+_meta_latest: dict | None = None  # latest Meta usage reading not yet written to the database
 _lock = threading.Lock()
+
+
+def local_day(now: datetime | None = None) -> str:
+    """Calendar day in the app's timezone (used for 'calls today' of services without a daily quota)."""
+    try:
+        tz = ZoneInfo(get_settings().video_tracking_timezone)
+    except Exception:
+        tz = timezone.utc
+    return (now or datetime.now(timezone.utc)).astimezone(tz).date().isoformat()
+
+
+def record_instagram_call() -> None:
+    """Count one Instagram Graph API request (every attempt)."""
+    key = (local_day(), INSTAGRAM, "app")
+    with _lock:
+        entry = _pending.setdefault(key, [0, 0, None])
+        entry[0] += 1
+        entry[1] += 1
+
+
+def _percentages(entry: dict) -> list[float]:
+    return [float(entry.get(k) or 0) for k in ("call_count", "total_cputime", "total_time")]
+
+
+def record_meta_usage(response) -> None:
+    """Read Meta's rate-limit headers (X-App-Usage / X-Business-Use-Case-Usage) from a Graph API response."""
+    global _meta_latest
+    headers = response.headers
+    raw_app, raw_buc = headers.get("x-app-usage"), headers.get("x-business-use-case-usage")
+    if not raw_app and not raw_buc:
+        return
+    percents: list[float] = []
+    regain = None
+    details: dict = {}
+    try:
+        if raw_app:
+            app_usage = json.loads(raw_app)
+            details["app"] = {k: app_usage.get(k) for k in ("call_count", "total_cputime", "total_time")}
+            percents += _percentages(app_usage)
+        if raw_buc:
+            for entries in json.loads(raw_buc).values():  # keyed by business object id - not stored
+                for entry in entries or []:
+                    percents += _percentages(entry)
+                    details.setdefault("business_use_case", []).append(
+                        {k: entry.get(k) for k in ("type", "call_count", "total_cputime", "total_time")}
+                    )
+                    wait = entry.get("estimated_time_to_regain_access")
+                    if wait:
+                        regain = max(regain or 0, int(wait))
+    except (ValueError, TypeError, AttributeError):
+        return
+    with _lock:
+        _meta_latest = {
+            "percent": round(max(percents, default=0.0), 1), "details": details,
+            "regain": regain, "observed_at": utcnow(),
+        }
 
 
 def key_fingerprint(key: str) -> str:
@@ -67,13 +127,20 @@ def _add(service: str, api_key: str, *, units: int, calls: int, exceeded: bool =
 
 def flush() -> int:
     """Write pending counts to the database (atomic increments, safe across processes)."""
+    global _meta_latest
     with _lock:
         pending = dict(_pending)
         _pending.clear()
-    if not pending:
+        meta, _meta_latest = _meta_latest, None
+    if not pending and meta is None:
         return 0
     try:
         with session_scope() as db:
+            if meta is not None:  # latest Meta rate-limit reading (one row, overwritten)
+                status = db.get(ApiRateStatus, INSTAGRAM) or ApiRateStatus(service=INSTAGRAM)
+                status.percent, status.details = meta["percent"], meta["details"]
+                status.regain_access_minutes, status.observed_at = meta["regain"], meta["observed_at"]
+                db.add(status)
             for (day, service, fingerprint), (units, calls, exceeded_at) in pending.items():
                 where = (ApiUsage.day == day, ApiUsage.service == service, ApiUsage.key_fingerprint == fingerprint)
                 values = {"units": ApiUsage.units + units, "calls": ApiUsage.calls + calls, "updated_at": utcnow()}
@@ -88,6 +155,8 @@ def flush() -> int:
                         db.execute(update(ApiUsage).where(*where).values(**values))
     except Exception:
         with _lock:  # keep the counts for the next attempt
+            if meta is not None and _meta_latest is None:
+                _meta_latest = meta
             for key, (units, calls, exceeded_at) in pending.items():
                 entry = _pending.setdefault(key, [0, 0, None])
                 entry[0] += units
@@ -111,9 +180,49 @@ class YouTubeQuota(BaseModel):
     day: str
     resets_at: datetime
     daily_limit_per_key: int
+    key_count: int
     total_units: int
+    total_limit: int  # all keys together (keys are used one after another)
+    percent: float
+    quota_exceeded_keys: int
     keys: list[KeyUsage]
     note: str
+
+
+class InstagramUsage(BaseModel):
+    calls_today: int
+    percent: float  # share of Meta's rolling one-hour limit (as reported by Meta)
+    observed_at: datetime | None
+    stale: bool  # no Graph API call in the last hour, so the hourly usage has reset
+    regain_access_minutes: int | None
+    note: str
+
+
+class ApiUsageOut(BaseModel):
+    youtube: YouTubeQuota
+    instagram: InstagramUsage
+
+
+def instagram_usage() -> InstagramUsage:
+    day = local_day()
+    with ReadSessionLocal() as db:
+        row = db.get(ApiUsage, (day, INSTAGRAM, "app"))
+        status = db.get(ApiRateStatus, INSTAGRAM)
+    with _lock:
+        pending_calls = _pending.get((day, INSTAGRAM, "app"), [0, 0, None])[1]
+        meta = dict(_meta_latest) if _meta_latest else None
+    observed = meta["observed_at"] if meta else (as_utc(status.observed_at) if status else None)
+    percent = meta["percent"] if meta else (status.percent if status else 0.0)
+    regain = meta["regain"] if meta else (status.regain_access_minutes if status else None)
+    stale = observed is None or utcnow() - observed > timedelta(minutes=META_WINDOW_MINUTES)
+    return InstagramUsage(
+        calls_today=(row.calls if row else 0) + pending_calls,
+        percent=0.0 if stale else percent,
+        observed_at=observed,
+        stale=stale,
+        regain_access_minutes=None if stale else regain,
+        note="Percent of Meta's rolling one-hour rate limit, as reported by Meta on each API response.",
+    )
 
 
 def youtube_quota(settings: Settings) -> YouTubeQuota:
@@ -140,11 +249,17 @@ def youtube_quota(settings: Settings) -> YouTubeQuota:
                 percent=round(min(units / limit * 100, 100), 1) if limit else 0.0, quota_exceeded=exceeded,
             )
         )
+    total_units = sum(k.units for k in keys)
+    total_limit = limit * len(keys)
     return YouTubeQuota(
         day=day,
         resets_at=next_reset(),
         daily_limit_per_key=limit,
-        total_units=sum(k.units for k in keys),
+        key_count=len(keys),
+        total_units=total_units,
+        total_limit=total_limit,
+        percent=round(min(total_units / total_limit * 100, 100), 1) if total_limit else 0.0,
+        quota_exceeded_keys=sum(1 for k in keys if k.quota_exceeded),
         keys=keys,
         note="Counted by CreatorIntel. Use of the same keys by other apps is not included.",
     )

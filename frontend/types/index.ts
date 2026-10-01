@@ -133,9 +133,27 @@ export interface YouTubeQuota {
   day: string;
   resets_at: string;
   daily_limit_per_key: number;
+  key_count: number;
   total_units: number;
+  total_limit: number;
+  percent: number;
+  quota_exceeded_keys: number;
   keys: YouTubeKeyUsage[];
   note: string;
+}
+
+export interface InstagramUsage {
+  calls_today: number;
+  percent: number;
+  observed_at: string | null;
+  stale: boolean;
+  regain_access_minutes: number | null;
+  note: string;
+}
+
+export interface ApiUsage {
+  youtube: YouTubeQuota;
+  instagram: InstagramUsage;
 }
 
 export interface InstagramTokenStatus {

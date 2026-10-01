@@ -76,6 +76,7 @@ async def request_json(
     max_retries: int | None = None,
     should_retry: Callable[[int, Any], bool] | None = None,
     on_attempt: Callable[[], None] | None = None,
+    on_response: Callable[[httpx.Response], None] | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> Any:
     """Perform a JSON request. Raises HttpRequestError (never leaks URLs/credentials)."""
@@ -98,6 +99,11 @@ async def request_json(
         except httpx.TransportError as exc:
             last_error = HttpRequestError(f"{service} network error: {type(exc).__name__}")
         else:
+            if on_response is not None:
+                try:
+                    on_response(response)
+                except Exception:  # usage bookkeeping must never break a request
+                    logger.debug("on_response hook failed", exc_info=True)
             payload = _safe_json(response)
             if response.is_success:
                 if payload is None:

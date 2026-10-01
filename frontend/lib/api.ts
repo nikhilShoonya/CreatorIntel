@@ -1,4 +1,5 @@
 import type {
+  ApiUsage,
   ConfigStatus,
   CreatorDetail,
   CreatorFilters,
@@ -125,6 +126,7 @@ export const api = {
   downloadUploadRows: (id: string, format: "excel" | "csv") =>
     downloadFile(`/api/uploads/${encodeURIComponent(id)}/rows/export?format=${format}`, `upload_rows.${format === "excel" ? "xlsx" : "csv"}`),
   youtubeQuota: () => request<YouTubeQuota>("/api/config/youtube-quota"),
+  apiUsage: () => request<ApiUsage>("/api/config/api-usage"),
   instagramToken: (refresh = false) =>
     request<InstagramTokenStatus>(`/api/config/instagram-token${refresh ? "?refresh=true" : ""}`),
 };

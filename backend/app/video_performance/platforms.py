@@ -20,7 +20,12 @@ from typing import Any
 import httpx
 
 from app.config.settings import Settings, get_settings
-from app.services.api_usage import record_youtube_call, record_youtube_quota_exceeded
+from app.services.api_usage import (
+    record_instagram_call,
+    record_meta_usage,
+    record_youtube_call,
+    record_youtube_quota_exceeded,
+)
 from app.services.http_client import HttpRequestError, request_json
 from app.utils.logging import log_event
 from app.utils.url_parser import ParsedLink
@@ -250,6 +255,8 @@ class InstagramVideoClient:
                 headers={"Authorization": f"Bearer {self.settings.meta_access_token.strip()}"},
                 should_retry=lambda _s, p: isinstance(p, dict) and (p.get("error") or {}).get("code") in _RATE_CODES,
                 client=self.client,
+                on_attempt=record_instagram_call,
+                on_response=record_meta_usage,
             )
         except HttpRequestError as exc:
             raise self._translate(exc) from exc

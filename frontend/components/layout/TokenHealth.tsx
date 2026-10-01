@@ -9,7 +9,7 @@ import { useApi } from "@/hooks/useApi";
 import { useStoredValue } from "@/hooks/useStoredValue";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
-import type { InstagramTokenStatus } from "@/types";
+import type { ApiUsage, InstagramTokenStatus } from "@/types";
 
 const PROBLEM: InstagramTokenStatus["state"][] = ["expired", "invalid", "wrong_type", "expiring"];
 const DISMISS_KEY = "creatorintel:token-banner-dismissed";
@@ -101,50 +101,118 @@ export function TokenStatusCard() {
   );
 }
 
-/** YouTube Data API units used today, per configured key (counted by this app). */
-export function YouTubeQuotaCard() {
-  const { data, error } = useApi("yt-quota", () => api.youtubeQuota(), { refreshMs: 30000, keepPrevious: true });
-  if (error) return <p className="px-5 py-4 text-sm text-rose-600">{error}</p>;
-  if (!data) return <div className="mx-5 my-4 h-10 animate-pulse rounded bg-slate-100" />;
-  const reset = new Date(data.resets_at).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" });
+let usageRequest: Promise<ApiUsage> | null = null;
+
+/** One request shared by both usage cards (they poll together). */
+function loadUsage() {
+  usageRequest ??= api.apiUsage().finally(() => {
+    usageRequest = null;
+  });
+  return usageRequest;
+}
+
+function useUsage() {
+  return useApi("api-usage", loadUsage, { refreshMs: 30000, keepPrevious: true });
+}
+
+function UsageBar({ label, percent, full, valueNow, valueMax }: {
+  label: string;
+  percent: number;
+  full?: boolean;
+  valueNow: number;
+  valueMax: number;
+}) {
+  const bar = full || percent >= 90 ? "bg-rose-500" : percent >= 70 ? "bg-amber-500" : "bg-emerald-500";
   return (
-    <div className="px-5 py-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="font-medium text-ink">YouTube quota used today</p>
-        <p className="text-xs text-muted">Resets daily at {reset} (midnight Pacific time)</p>
-      </div>
-      <ul className="mt-3 space-y-3">
-        {data.keys.map((key) => {
-          const level = key.quota_exceeded || key.percent >= 90 ? "high" : key.percent >= 70 ? "medium" : "low";
-          const bar = level === "high" ? "bg-rose-500" : level === "medium" ? "bg-amber-500" : "bg-emerald-500";
-          return (
-            <li key={key.fingerprint}>
-              <div className="flex items-baseline justify-between gap-3 text-sm">
-                <span className="font-medium text-slate-700">{key.label}</span>
-                <span className="tabular-nums text-slate-600">
-                  {key.units.toLocaleString("en-US")} / {key.limit.toLocaleString("en-US")} units
-                  <span className="ml-1.5 text-muted">({key.percent}%)</span>
-                  {key.quota_exceeded && <span className="ml-2 font-semibold text-rose-600">Quota exceeded</span>}
-                </span>
-              </div>
-              <div
-                className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100"
-                role="meter"
-                aria-label={`${key.label} quota used`}
-                aria-valuenow={key.units}
-                aria-valuemin={0}
-                aria-valuemax={key.limit}
-              >
-                <div className={`h-full rounded-full ${bar}`} style={{ width: `${Math.max(key.percent, key.units ? 1 : 0)}%` }} />
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-      <p className="mt-3 text-xs text-muted">
-        {data.note} When one key runs out, the next key is used automatically.
-      </p>
+    <div
+      className="mt-2 h-2.5 overflow-hidden rounded-full bg-slate-100"
+      role="meter"
+      aria-label={label}
+      aria-valuenow={valueNow}
+      aria-valuemin={0}
+      aria-valuemax={valueMax}
+    >
+      <div className={`h-full rounded-full transition-[width] ${bar}`} style={{ width: `${Math.max(percent, valueNow ? 1 : 0)}%` }} />
     </div>
   );
 }
 
+function UsageShell({ title, aside, children }: { title: string; aside: string; children: React.ReactNode }) {
+  return (
+    <div className="px-5 py-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="font-medium text-ink">{title}</p>
+        <p className="text-xs text-muted">{aside}</p>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+const units = (n: number) => n.toLocaleString("en-US");
+
+/** YouTube Data API units used today across all configured keys (counted by this app). */
+export function YouTubeQuotaCard() {
+  const { data, error } = useUsage();
+  if (error) return <p className="px-5 py-4 text-sm text-rose-600">{error}</p>;
+  if (!data) return <div className="mx-5 my-4 h-10 animate-pulse rounded bg-slate-100" />;
+  const yt = data.youtube;
+  const reset = new Date(yt.resets_at).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" });
+  const allExhausted = yt.key_count > 0 && yt.quota_exceeded_keys >= yt.key_count;
+  return (
+    <UsageShell title="YouTube quota used today" aside={`Resets daily at ${reset} (midnight Pacific time)`}>
+      <p className="mt-3 flex flex-wrap items-baseline justify-between gap-x-3 text-sm">
+        <span className="tabular-nums text-slate-700">
+          <span className="font-semibold text-ink">{units(yt.total_units)}</span> / {units(yt.total_limit)} units
+          <span className="ml-1.5 text-muted">({yt.percent}%)</span>
+        </span>
+        <span className="text-xs text-muted">
+          {yt.key_count} key{yt.key_count === 1 ? "" : "s"} × {units(yt.daily_limit_per_key)} units
+        </span>
+      </p>
+      <UsageBar label="YouTube quota used today" percent={yt.percent} full={allExhausted} valueNow={yt.total_units} valueMax={yt.total_limit} />
+      {yt.quota_exceeded_keys > 0 && (
+        <p className={`mt-2 text-xs font-medium ${allExhausted ? "text-rose-600" : "text-amber-700"}`}>
+          {allExhausted
+            ? "All keys are out of quota. YouTube data will be N/A until the reset."
+            : `${yt.quota_exceeded_keys} of ${yt.key_count} keys ran out of quota; the remaining keys are being used.`}
+        </p>
+      )}
+      <p className="mt-2 text-xs text-muted">{yt.note} Keys are used one after another automatically.</p>
+    </UsageShell>
+  );
+}
+
+/** Instagram Graph API calls today and Meta's own report of its hourly rate limit. */
+export function InstagramUsageCard() {
+  const { data, error } = useUsage();
+  if (error) return <p className="px-5 py-4 text-sm text-rose-600">{error}</p>;
+  if (!data) return <div className="mx-5 my-4 h-10 animate-pulse rounded bg-slate-100" />;
+  const ig = data.instagram;
+  const blocked = (ig.regain_access_minutes ?? 0) > 0;
+  return (
+    <UsageShell title="Instagram API usage" aside="Meta's limit is a rolling one-hour window">
+      <p className="mt-3 flex flex-wrap items-baseline justify-between gap-x-3 text-sm">
+        <span className="tabular-nums text-slate-700">
+          <span className="font-semibold text-ink">{ig.percent}%</span> of Meta&apos;s hourly limit used
+        </span>
+        <span className="text-xs tabular-nums text-muted">
+          {units(ig.calls_today)} call{ig.calls_today === 1 ? "" : "s"} today
+        </span>
+      </p>
+      <UsageBar label="Instagram hourly limit used" percent={Math.min(ig.percent, 100)} full={blocked} valueNow={ig.percent} valueMax={100} />
+      {blocked && (
+        <p className="mt-2 text-xs font-medium text-rose-600">
+          Meta is throttling requests. Access returns in about {ig.regain_access_minutes} min.
+        </p>
+      )}
+      <p className="mt-2 text-xs text-muted">
+        {ig.observed_at
+          ? ig.stale
+            ? `No Instagram calls in the last hour (last at ${formatDateTime(ig.observed_at)}), so the hourly usage has reset.`
+            : `Reported by Meta at ${formatDateTime(ig.observed_at)}.`
+          : "No usage reported by Meta yet. It appears after the next Instagram request."}
+      </p>
+    </UsageShell>
+  );
+}
