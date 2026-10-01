@@ -1,10 +1,8 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, X, XCircle } from "lucide-react";
 
-import { Button } from "@/components/ui/controls";
 import { useApi } from "@/hooks/useApi";
 import { useStoredValue } from "@/hooks/useStoredValue";
 import { api } from "@/lib/api";
@@ -20,7 +18,7 @@ function signature(status: InstagramTokenStatus) {
 
 /** Slim app-wide warning when the Instagram (Meta) token is expired, invalid or about to expire. */
 export function TokenBanner() {
-  const { data } = useApi("ig-token", () => api.instagramToken());
+  const { data } = useApi("ig-token", ({ force }) => api.instagramToken(force));
   const [dismissed, setDismissed] = useStoredValue(DISMISS_KEY, "");
   if (!data || !PROBLEM.includes(data.state) || dismissed === signature(data)) return null;
   const expiring = data.state === "expiring";
@@ -48,10 +46,8 @@ export function TokenBanner() {
 
 /** Token details for the Settings page. */
 export function TokenStatusCard() {
-  const [refresh, setRefresh] = useState(0);
-  const { data, error, loading } = useApi(`ig-token-settings:${refresh}`, () => api.instagramToken(refresh > 0), {
-    keepPrevious: true,
-  });
+  // "Refresh data" in the top bar re-checks the token with Meta (force = true).
+  const { data, error } = useApi("ig-token-settings", ({ force }) => api.instagramToken(force), { keepPrevious: true });
   const good = data?.state === "ok";
   const warn = data?.state === "expiring" || data?.state === "unknown";
   const Icon = good ? CheckCircle2 : warn ? AlertTriangle : XCircle;
@@ -92,10 +88,6 @@ export function TokenStatusCard() {
             </>
           )}
         </div>
-        <Button onClick={() => setRefresh((n) => n + 1)} disabled={loading} className="shrink-0">
-          {loading ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
-          Check again
-        </Button>
       </div>
     </div>
   );

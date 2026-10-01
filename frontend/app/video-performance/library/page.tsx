@@ -1,13 +1,14 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { Suspense, useRef, useState, type ComponentProps } from "react";
+import { useSearchParams } from "next/navigation";
 import { FilePlus, FileSpreadsheet, ListVideo, Upload, UserPlus, Users } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/controls";
 import { CreatorsPanel } from "@/components/video-performance/CreatorsPanel";
 import { UploadsPanel } from "@/components/video-performance/UploadsPanel";
 import { AddCreatorDialog, AddVideoDialog, UploadVideosDialog } from "@/components/video-performance/dialogs";
-import { VideoTable } from "@/components/video-performance/VideoTable";
+import { sortFromParam, VideoTable } from "@/components/video-performance/VideoTable";
 
 type Tab = "videos" | "creators" | "uploads";
 type Toast = { tone: "success" | "error"; message: string } | null;
@@ -77,7 +78,11 @@ export default function TrackingLibraryPage() {
           ))}
         </div>
         <div className="border-t border-line pt-4">
-          {tab === "videos" && <VideoTable refreshToken={refreshToken} onToast={showToast} onChanged={bump} />}
+          {tab === "videos" && (
+            <Suspense fallback={<div className="mx-5 mb-5 h-64 animate-pulse rounded-lg bg-slate-50" />}>
+              <VideoTableFromUrl refreshToken={refreshToken} onToast={showToast} onChanged={bump} />
+            </Suspense>
+          )}
           {tab === "creators" && <CreatorsPanel refreshToken={refreshToken} onToast={showToast} onChanged={bump} />}
           {tab === "uploads" && <UploadsPanel refreshToken={refreshToken} />}
         </div>
@@ -106,4 +111,10 @@ export default function TrackingLibraryPage() {
       )}
     </div>
   );
+}
+
+/** Opens sorted when linked from the dashboard (e.g. ?sort=engagement_rate). */
+function VideoTableFromUrl(props: Omit<ComponentProps<typeof VideoTable>, "initialSort">) {
+  const sort = sortFromParam(useSearchParams().get("sort"));
+  return <VideoTable key={sort ?? "default"} initialSort={sort} {...props} />;
 }

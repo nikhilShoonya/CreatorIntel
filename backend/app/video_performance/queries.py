@@ -2,15 +2,14 @@
 
 import math
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from datetime import timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, union_all
 
-from app.utils.time import utcnow
 from app.config.settings import get_settings
-from app.utils.time import as_utc
+from app.utils.time import as_utc, utcnow
 from app.video_performance.models import (
     CreatorTrackingStatus,
     VideoStatus,
@@ -28,11 +27,13 @@ from app.video_performance.schemas import (
     RecentSentiment,
     SentimentCounts,
     SnapshotOut,
+    TrendPoint,
     UploadOut,
     UploadRowOut,
     VideoOut,
+    youtube_thumbnail,
 )
-from app.video_performance.timeutil import local_day_start_utc
+from app.video_performance.timeutil import local_day_start_utc, tracking_tz
 
 SortKey = Literal["current_views", "views_gained", "growth_pct", "engagement_rate", "last_checked_at", "created_at", "published_at"]
 _ACTIVE = (VideoStatus.PENDING, VideoStatus.PROCESSING, VideoStatus.TRACKING, VideoStatus.PARTIAL, VideoStatus.FAILED)
@@ -225,15 +226,10 @@ def _counts(pairs: list[tuple[str | None, int]]) -> SentimentCounts:
     return counts
 
 
-def sentiment_breakdown() -> tuple[SentimentCounts, list[GroupSentiment], list[GroupSentiment]]:
+def sentiment_breakdown() -> tuple[SentimentCounts, list[GroupSentiment]]:
     with read_scope() as db:
         by_platform = db.execute(
             select(VtVideo.platform, VtVideo.sentiment, func.count()).group_by(VtVideo.platform, VtVideo.sentiment)
-        ).all()
-        by_creator = db.execute(
-            select(VtVideo.creator_name, VtVideo.platform, VtVideo.sentiment, func.count())
-            .where(VtVideo.creator_name.is_not(None))
-            .group_by(VtVideo.creator_name, VtVideo.platform, VtVideo.sentiment)
         ).all()
     overall = _counts([(s, n) for _, s, n in by_platform])
     platforms = []
@@ -241,18 +237,10 @@ def sentiment_breakdown() -> tuple[SentimentCounts, list[GroupSentiment], list[G
         pairs = [(s, n) for p, s, n in by_platform if p == platform]
         if pairs:
             platforms.append(GroupSentiment(name=platform, platform=platform, counts=_counts(pairs), total=sum(n for _, n in pairs)))
-    grouped: dict[tuple[str, str], list[tuple[str | None, int]]] = {}
-    for name, platform, sentiment, n in by_creator:
-        grouped.setdefault((name, platform), []).append((sentiment, n))
-    creators_ = [
-        GroupSentiment(name=name, platform=platform, counts=_counts(pairs), total=sum(n for _, n in pairs))
-        for (name, platform), pairs in grouped.items()
-    ]
-    creators_.sort(key=lambda g: (-g.total, g.name.lower()))
-    return overall, platforms, creators_[:10]
+    return overall, platforms
 
 
-def recent_sentiment(limit: int = 8) -> list[RecentSentiment]:
+def recent_sentiment(limit: int = 20) -> list[RecentSentiment]:
     with read_scope() as db:
         rows = db.execute(
             select(VtSentiment, VtVideo)
@@ -265,7 +253,7 @@ def recent_sentiment(limit: int = 8) -> list[RecentSentiment]:
             RecentSentiment(
                 video_id=v.id, display_title=VideoOut.model_validate(v).display_title, video_url=v.video_url,
                 platform=v.platform, creator_name=v.creator_name, sentiment=s.sentiment, confidence=s.confidence,
-                analyzed_at=s.analyzed_at,
+                analyzed_at=s.analyzed_at, thumbnail_url=youtube_thumbnail(v.platform, v.video_identifier),
             )
             for s, v in rows
         ]
@@ -275,10 +263,6 @@ def ranked(kind: str, limit: int = 5) -> list[VideoOut]:
     stmt = select(VtVideo)
     if kind == "top":
         stmt = stmt.where(VtVideo.current_views.is_not(None)).order_by(VtVideo.current_views.desc())
-    elif kind == "growing":
-        stmt = stmt.where(VtVideo.growth_pct.is_not(None), VtVideo.previous_views >= 100).order_by(
-            VtVideo.growth_pct.desc(), VtVideo.views_gained.desc()
-        )
     elif kind == "engagement":
         stmt = stmt.where(VtVideo.engagement_rate.is_not(None), VtVideo.current_views >= 100).order_by(
             VtVideo.engagement_rate.desc()
@@ -287,3 +271,106 @@ def ranked(kind: str, limit: int = 5) -> list[VideoOut]:
         stmt = stmt.where(VtVideo.source == "discovered").order_by(VtVideo.discovered_at.desc())
     with read_scope() as db:
         return [VideoOut.model_validate(v) for v in db.scalars(stmt.limit(limit))]
+
+# ------------------------------------------------------------------ trend
+@dataclass
+class Trend:
+    points: list[TrendPoint]
+    videos_added: int = 0
+    views_gained: int = 0
+    views_growth_pct: float | None = None
+    video_gains: dict[int, list[int | None]] = field(default_factory=dict)
+
+
+def _trend_snapshots(start: datetime) -> list:
+    """Each video's latest check before `start` (where the trend starts from) plus every check since, oldest first."""
+    S = VtViewSnapshot
+    columns = (S.video_id, S.captured_at, S.views, S.likes, S.comments)
+    latest = (
+        select(S.video_id, func.max(S.captured_at).label("at"))
+        .where(S.captured_at < start, S.views.is_not(None))
+        .group_by(S.video_id)
+        .subquery()
+    )
+    before = select(*columns).join(latest, (S.video_id == latest.c.video_id) & (S.captured_at == latest.c.at))
+    since = select(*columns).where(S.captured_at >= start, S.views.is_not(None))
+    combined = union_all(before, since).subquery()
+    with read_scope() as db:
+        return db.execute(select(combined).order_by(combined.c.captured_at)).all()
+
+
+def _video_dates() -> list:
+    with read_scope() as db:
+        return db.execute(select(VtVideo.platform, VtVideo.created_at, VtVideo.source, VtVideo.discovered_at)).all()
+
+
+def trend(days: int) -> Trend:
+    """Daily totals for the last `days` local days, built only from recorded view checks (no estimates)."""
+    tz = tracking_tz()
+    today = datetime.now(timezone.utc).astimezone(tz).date()
+    day_list = [today - timedelta(days=offset) for offset in range(days - 1, -1, -1)]
+    start = datetime.combine(day_list[0], time.min, tzinfo=tz).astimezone(timezone.utc)
+    with ThreadPoolExecutor(max_workers=1) as pool:  # both reads in parallel (remote DB latency)
+        videos_future = pool.submit(_video_dates)
+        snapshots = _trend_snapshots(start)
+        videos = videos_future.result()
+
+    def local(value: datetime) -> date:
+        return as_utc(value).astimezone(tz).date()
+
+    state: dict[int, tuple] = {}  # each video's latest (views, likes, comments) so far
+    per_day: dict[date, dict[int, tuple]] = {}  # latest check of each video on each day of the range
+    for video_id, captured_at, views, likes, comments in snapshots:
+        if as_utc(captured_at) < start:
+            state[video_id] = (views, likes, comments)
+        else:
+            per_day.setdefault(local(captured_at), {})[video_id] = (views, likes, comments)
+    created = [(local(v.created_at), v.platform) for v in videos]
+    discovered: dict[date, int] = {}
+    for v in videos:
+        if v.source == "discovered" and v.discovered_at:
+            day = local(v.discovered_at)
+            discovered[day] = discovered.get(day, 0) + 1
+
+    baseline = {video_id: values[0] for video_id, values in state.items()}
+    gains: dict[int, list[int | None]] = {}
+    points: list[TrendPoint] = []
+    for index, day in enumerate(day_list):
+        checks = per_day.get(day, {})
+        known = set(state)
+        gained = 0
+        for video_id, values in checks.items():
+            if video_id in known:  # the first ever check of a video is not a gain
+                delta = values[0] - state[video_id][0]
+                gains.setdefault(video_id, [None] * days)[index] = delta
+                gained += delta
+            state[video_id] = values
+        for video_id in known - checks.keys():  # tracked but not checked that day
+            gains.setdefault(video_id, [None] * days)[index] = 0
+        engaged = [(likes + comments, views) for views, likes, comments in state.values()
+                   if views and likes is not None and comments is not None]
+        engaged_views = sum(views for _, views in engaged)
+        existing = [platform for created_day, platform in created if created_day <= day]
+        points.append(
+            TrendPoint(
+                day=day,
+                total_views=sum(values[0] for values in state.values()),
+                views_gained=gained,
+                engagement_rate=round(sum(e for e, _ in engaged) / engaged_views * 100, 2) if engaged_views else None,
+                videos=len(existing),
+                youtube_videos=existing.count("youtube"),
+                instagram_videos=existing.count("instagram"),
+                new_videos=discovered.get(day, 0),
+                videos_checked=len(checks),
+            )
+        )
+
+    base_total = sum(baseline.values())
+    now_total = sum(state[video_id][0] for video_id in baseline)
+    return Trend(
+        points=points,
+        videos_added=sum(1 for created_day, _ in created if created_day >= day_list[0]),
+        views_gained=sum(p.views_gained for p in points),
+        views_growth_pct=round((now_total - base_total) / base_total * 100, 2) if base_total else None,
+        video_gains=gains,
+    )

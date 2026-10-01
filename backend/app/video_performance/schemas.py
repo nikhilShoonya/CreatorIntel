@@ -1,6 +1,7 @@
 """API schemas for Video Performance."""
 
-from datetime import datetime
+import re
+from datetime import date, datetime
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
@@ -9,6 +10,14 @@ from app.utils.text import caption_title
 from app.utils.time import as_utc
 
 UTC = Annotated[datetime, AfterValidator(as_utc)]
+_YOUTUBE_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def youtube_thumbnail(platform: str, video_identifier: str | None) -> str | None:
+    """YouTube's public thumbnail for a video ID (Instagram has no stable public thumbnail URL)."""
+    if platform == "youtube" and _YOUTUBE_ID.match(video_identifier or ""):
+        return f"https://i.ytimg.com/vi/{video_identifier}/mqdefault.jpg"
+    return None
 
 
 class VideoOut(BaseModel):
@@ -40,6 +49,11 @@ class VideoOut(BaseModel):
     discovered_at: UTC | None
     created_at: UTC
     caption: str | None = Field(default=None, exclude=True)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def thumbnail_url(self) -> str | None:
+        return youtube_thumbnail(self.platform, self.video_identifier)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -213,6 +227,7 @@ class RecentSentiment(BaseModel):
     sentiment: str | None
     confidence: float | None
     analyzed_at: UTC
+    thumbnail_url: str | None = None
 
 
 class JobInfo(BaseModel):
@@ -223,6 +238,20 @@ class JobInfo(BaseModel):
     last_started_at: UTC | None = None
     last_finished_at: UTC | None = None
     last_message: str | None = None
+
+
+class TrendPoint(BaseModel):
+    """One local day (tracking timezone). Each video's views carry forward from its latest check."""
+
+    day: date
+    total_views: int
+    views_gained: int
+    engagement_rate: float | None
+    videos: int
+    youtube_videos: int
+    instagram_videos: int
+    new_videos: int  # newly detected on tracked creators
+    videos_checked: int
 
 
 class DashboardOut(BaseModel):
@@ -238,11 +267,15 @@ class DashboardOut(BaseModel):
     active_creators: int
     sentiment_overall: SentimentCounts
     sentiment_by_platform: list[GroupSentiment]
-    sentiment_by_creator: list[GroupSentiment]
     recent_sentiment: list[RecentSentiment]
     top_performing: list[VideoOut]
-    fastest_growing: list[VideoOut]
     highest_engagement: list[VideoOut]
     latest_detected: list[VideoOut]
     jobs: list[JobInfo]
     timezone: str
+    range_days: int = 7
+    trend: list[TrendPoint] = []
+    videos_added_in_range: int = 0
+    views_gained_in_range: int = 0
+    views_growth_pct: float | None = None  # growth of the videos already tracked before the range
+    video_trends: dict[int, list[int | None]] = {}  # daily views gained of the listed videos

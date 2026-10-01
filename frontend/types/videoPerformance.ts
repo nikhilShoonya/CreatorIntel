@@ -23,6 +23,7 @@ export interface VpVideo {
   comments: number | null;
   engagement_rate: number | null;
   engagement_basis: string | null;
+  thumbnail_url: string | null;
   sentiment: "Positive" | "Neutral" | "Negative" | null;
   sentiment_confidence: number | null;
   status: VpStatus;
@@ -147,7 +148,6 @@ export interface VpDashboard {
   active_creators: number;
   sentiment_overall: SentimentCounts;
   sentiment_by_platform: GroupSentiment[];
-  sentiment_by_creator: GroupSentiment[];
   recent_sentiment: {
     video_id: number;
     display_title: string;
@@ -157,13 +157,33 @@ export interface VpDashboard {
     sentiment: string | null;
     confidence: number | null;
     analyzed_at: string;
+    thumbnail_url: string | null;
   }[];
   top_performing: VpVideo[];
-  fastest_growing: VpVideo[];
   highest_engagement: VpVideo[];
   latest_detected: VpVideo[];
   jobs: VpJob[];
   timezone: string;
+  range_days: number;
+  trend: VpTrendPoint[];
+  videos_added_in_range: number;
+  views_gained_in_range: number;
+  /** Growth of the videos that were already tracked before the range; null when none were. */
+  views_growth_pct: number | null;
+  /** Daily views gained for the listed videos (null = not tracked yet that day). */
+  video_trends: Record<string, (number | null)[]>;
+}
+
+export interface VpTrendPoint {
+  day: string;
+  total_views: number;
+  views_gained: number;
+  engagement_rate: number | null;
+  videos: number;
+  youtube_videos: number;
+  instagram_videos: number;
+  new_videos: number;
+  videos_checked: number;
 }
 
 export interface VpFilters {

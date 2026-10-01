@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
-import { Search } from "lucide-react";
+import { Check, RefreshCw, Search } from "lucide-react";
 
+import { refreshAllData } from "@/hooks/useApi";
 import { useStoredValue } from "@/hooks/useStoredValue";
 import { initials } from "@/lib/format";
 
@@ -36,12 +37,47 @@ export function Topbar() {
         />
       </form>
 
-      <Link href="/settings" className="flex shrink-0 items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-slate-50" title="Profile & settings">
-        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent text-sm font-semibold text-white">
-          {initials(name)}
-        </span>
-        <span className="hidden text-sm font-medium text-ink sm:block">{name}</span>
-      </Link>
+      <div className="flex shrink-0 items-center gap-2">
+        <RefreshDataButton />
+        <Link href="/settings" className="flex shrink-0 items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-slate-50" title="Profile & settings">
+          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent text-sm font-semibold text-white">
+            {initials(name)}
+          </span>
+          <span className="hidden text-sm font-medium text-ink sm:block">{name}</span>
+        </Link>
+      </div>
     </header>
+  );
+}
+
+/** One button for the whole site: reloads every piece of data on the current page from the backend. */
+function RefreshDataButton() {
+  const [state, setState] = useState<"idle" | "busy" | "done">("idle");
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+
+  async function onClick() {
+    setState("busy");
+    await refreshAllData();
+    setUpdatedAt(new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }));
+    setState("done");
+    window.setTimeout(() => setState((current) => (current === "done" ? "idle" : current)), 2000);
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={state === "busy"}
+      title={updatedAt ? `Reload all data · last refreshed at ${updatedAt}` : "Reload all data"}
+      aria-live="polite"
+      className="inline-flex h-9 items-center gap-2 rounded-lg border border-line bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 hover:text-ink disabled:cursor-wait"
+    >
+      {state === "done" ? (
+        <Check size={16} className="text-emerald-600" />
+      ) : (
+        <RefreshCw size={16} className={state === "busy" ? "animate-spin text-accent" : ""} />
+      )}
+      <span className="hidden md:inline">{state === "busy" ? "Refreshing…" : state === "done" ? "Updated" : "Refresh data"}</span>
+    </button>
   );
 }

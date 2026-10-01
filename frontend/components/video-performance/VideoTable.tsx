@@ -41,18 +41,25 @@ import { formatChecked, formatGrowth, formatSigned, growthTone } from "./format"
 const STATUSES: VpStatus[] = ["Tracking", "Partial", "Pending", "Processing", "Paused", "Completed", "Failed", "Unsupported"];
 const BUSY: VpStatus[] = ["Pending", "Processing"];
 
+const SORT_KEYS: VpSortKey[] = ["current_views", "views_gained", "growth_pct", "engagement_rate", "last_checked_at", "created_at"];
+
+export function sortFromParam(value: string | null): VpSortKey | undefined {
+  return SORT_KEYS.find((key) => key === value);
+}
+
 interface Props {
+  initialSort?: VpSortKey;
   refreshToken: number;
   onToast: (tone: "success" | "error", message: string) => void;
   onChanged: () => void;
 }
 
-export function VideoTable({ refreshToken, onToast, onChanged }: Props) {
+export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Props) {
   const [search, setSearch] = useState("");
   const [platform, setPlatform] = useState("");
   const [creator, setCreator] = useState("");
   const [status, setStatus] = useState("");
-  const [sort, setSort] = useState<{ key: VpSortKey; dir: "asc" | "desc" } | null>(null);
+  const [sort, setSort] = useState<{ key: VpSortKey; dir: "asc" | "desc" } | null>(initialSort ? { key: initialSort, dir: "desc" } : null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [checked, setChecked] = useState<Set<number>>(new Set());

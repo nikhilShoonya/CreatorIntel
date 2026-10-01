@@ -427,23 +427,32 @@ def _jobs(request: Request, tracker: VideoTracker) -> list[JobInfo]:
 
 
 @router.get("/dashboard", response_model=DashboardOut)
-async def dashboard(request: Request, tracker: VideoTracker = Depends(get_tracker)):
+async def dashboard(
+    request: Request,
+    days: int = Query(7, ge=2, le=90, description="Length of the trend range in days"),
+    tracker: VideoTracker = Depends(get_tracker),
+):
     # Independent read queries run in parallel (each has its own session) to keep remote-DB latency low.
-    (totals, sentiment, recent, top, growing, engagement, latest, jobs) = await asyncio.gather(
+    # Keep the number of parallel queries below DB_POOL_SIZE: an extra connection to a remote DB costs ~1 s.
+    (totals, sentiment, recent, top, engagement, latest, jobs, trend) = await asyncio.gather(
         asyncio.to_thread(queries.dashboard_totals),
         asyncio.to_thread(queries.sentiment_breakdown),
         asyncio.to_thread(queries.recent_sentiment),
         asyncio.to_thread(queries.ranked, "top"),
-        asyncio.to_thread(queries.ranked, "growing"),
         asyncio.to_thread(queries.ranked, "engagement"),
-        asyncio.to_thread(queries.ranked, "latest"),
+        asyncio.to_thread(queries.ranked, "latest", 20),
         asyncio.to_thread(_jobs, request, tracker),
+        asyncio.to_thread(queries.trend, days),
     )
-    overall, by_platform, by_creator = sentiment
+    listed = {v.id for v in (*top, *engagement)}
+    overall, by_platform = sentiment
     return DashboardOut(
-        **totals, sentiment_overall=overall, sentiment_by_platform=by_platform, sentiment_by_creator=by_creator,
-        recent_sentiment=recent, top_performing=top, fastest_growing=growing, highest_engagement=engagement,
+        **totals, sentiment_overall=overall, sentiment_by_platform=by_platform,
+        recent_sentiment=recent, top_performing=top, highest_engagement=engagement,
         latest_detected=latest, jobs=jobs, timezone=get_settings().video_tracking_timezone,
+        range_days=days, trend=trend.points, videos_added_in_range=trend.videos_added,
+        views_gained_in_range=trend.views_gained, views_growth_pct=trend.views_growth_pct,
+        video_trends={video_id: series for video_id, series in trend.video_gains.items() if video_id in listed},
     )
 
 

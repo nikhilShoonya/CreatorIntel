@@ -21,7 +21,7 @@ interface ActionResult {
 
 /** Client for the independent Video Performance module (/api/video-performance). */
 export const vpApi = {
-  dashboard: () => request<VpDashboard>(`${BASE}/dashboard`),
+  dashboard: (days = 7) => request<VpDashboard>(`${BASE}/dashboard${toQuery({ days })}`),
   jobs: () => request<VpJob[]>(`${BASE}/jobs`),
   runJob: (job: VpJob["job_type"]) => request<ActionResult>(`${BASE}/jobs/${job}/run`, jsonInit("POST")),
 
