@@ -1,14 +1,15 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { FilePlus, ListVideo, Upload, UserPlus, Users } from "lucide-react";
+import { FilePlus, FileSpreadsheet, ListVideo, Upload, UserPlus, Users } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/controls";
 import { CreatorsPanel } from "@/components/video-performance/CreatorsPanel";
+import { UploadsPanel } from "@/components/video-performance/UploadsPanel";
 import { AddCreatorDialog, AddVideoDialog, UploadVideosDialog } from "@/components/video-performance/dialogs";
 import { VideoTable } from "@/components/video-performance/VideoTable";
 
-type Tab = "videos" | "creators";
+type Tab = "videos" | "creators" | "uploads";
 type Toast = { tone: "success" | "error"; message: string } | null;
 
 export default function TrackingLibraryPage() {
@@ -57,6 +58,7 @@ export default function TrackingLibraryPage() {
             [
               { id: "videos", label: "Tracked videos", Icon: ListVideo },
               { id: "creators", label: "Tracked creators", Icon: Users },
+              { id: "uploads", label: "Uploads", Icon: FileSpreadsheet },
             ] as const
           ).map(({ id, label, Icon }) => (
             <button
@@ -75,11 +77,9 @@ export default function TrackingLibraryPage() {
           ))}
         </div>
         <div className="border-t border-line pt-4">
-          {tab === "videos" ? (
-            <VideoTable refreshToken={refreshToken} onToast={showToast} onChanged={bump} />
-          ) : (
-            <CreatorsPanel refreshToken={refreshToken} onToast={showToast} onChanged={bump} />
-          )}
+          {tab === "videos" && <VideoTable refreshToken={refreshToken} onToast={showToast} onChanged={bump} />}
+          {tab === "creators" && <CreatorsPanel refreshToken={refreshToken} onToast={showToast} onChanged={bump} />}
+          {tab === "uploads" && <UploadsPanel refreshToken={refreshToken} />}
         </div>
       </Card>
 

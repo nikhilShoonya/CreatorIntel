@@ -75,6 +75,7 @@ async def request_json(
     timeout: float | None = None,
     max_retries: int | None = None,
     should_retry: Callable[[int, Any], bool] | None = None,
+    on_attempt: Callable[[], None] | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> Any:
     """Perform a JSON request. Raises HttpRequestError (never leaks URLs/credentials)."""
@@ -85,6 +86,8 @@ async def request_json(
 
     for attempt in range(retries + 1):
         response: httpx.Response | None = None
+        if on_attempt is not None:
+            on_attempt()
         try:
             response = await client.request(
                 method, url, params=params, headers=headers, json=json,

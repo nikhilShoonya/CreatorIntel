@@ -147,6 +147,29 @@ Sidebar → **Video Performance** → **Dashboard** / **Tracking Library**. It t
 - **Daily numbers:** each check stores a snapshot. *Previous views* is the latest snapshot from an earlier day, so *Views gained* and *Growth %* are day-over-day. Engagement is `(likes + comments) / views × 100`, or N/A when a value is missing.
 - **Instagram limits (official API):** a reel can only be read through its owner's **Professional** account (Business Discovery), so the owner's username is needed, either in the link (`instagram.com/<user>/reel/<code>`) or in a `Username` column. Only roughly the latest 200 posts of an account are searchable (`VIDEO_TRACKING_INSTAGRAM_SCAN_PAGES`). Personal/private accounts show **Unsupported** with the reason.
 
+## Database migrations
+
+The schema is managed with **Alembic** (`backend/migrations/`). Migrations run automatically when the backend starts. A database created before migrations existed is detected and upgraded in place, with no data loss. After changing a model, create a migration:
+
+```bash
+cd backend
+alembic revision --autogenerate -m "describe the change"
+```
+
+A test (`test_models_and_migrations_are_in_sync`) fails if a model change has no migration.
+
+## Uploaded files, logs and token health
+
+- **Uploaded files** are deleted after `UPLOAD_FILE_RETENTION_DAYS` (default 30). Every row is saved in the database first, and stays visible under **History → View file data** and **Video Performance → Tracking Library → Uploads**, with Excel/CSV download.
+- **Logs** are written to `backend/logs/creatorintel.log`, rotated daily and kept for `LOG_RETENTION_DAYS`. API keys, tokens and database passwords are redacted.
+- **Meta token health**: **Settings** shows whether the Instagram token is valid, when it expires, and any missing permissions. A banner appears across the app when it is expired, invalid, or expires within 7 days.
+
+## Speed with a remote database
+
+Every database round trip from your machine to the database server adds latency (about 300 ms from India to Neon's us-east-2). The app keeps that to one round trip per request where possible. It also keeps a pool of open connections, keeps Neon awake during `DB_KEEP_WARM_HOURS`, and shows previously loaded data immediately when you revisit a page.
+
+**Fastest option:** create the Neon project in the region closest to you (e.g. **AWS Asia Pacific – Singapore** for India). Each round trip drops to well under 100 ms. Point `DATABASE_URL` at the new project; tables are created automatically on startup.
+
 ## 10. Troubleshooting
 
 | Symptom | Fix |

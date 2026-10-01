@@ -11,6 +11,9 @@ from fastapi.responses import JSONResponse
 from app.api import creators, exports, system, uploads
 from app.config.settings import get_settings
 from app.models.db import init_db
+from app.services.api_usage import UsageFlusher
+from app.services.db_keepalive import DatabaseKeepAlive
+from app.services.housekeeping import HousekeepingTask
 from app.services.http_client import close_http_client
 from app.services.orchestrator import EnrichmentOrchestrator
 from app.utils.logging import configure_logging, log_event
@@ -20,7 +23,7 @@ from app.video_performance.scheduler import VideoTrackingScheduler
 from app.video_performance.tracker import VideoTracker
 
 settings = get_settings()
-configure_logging(settings.log_level)
+configure_logging(settings.log_level, settings.log_dir, settings.log_retention_days)
 logger = logging.getLogger("creatorintel")
 
 
@@ -44,9 +47,18 @@ async def lifespan(app: FastAPI):
     app.state.video_scheduler = video_scheduler
     await video_tracker.resume_after_restart()
     video_scheduler.start()
+    housekeeping = HousekeepingTask(settings)  # deletes old Creator Analytics files after saving their rows
+    housekeeping.start()
+    keepalive = DatabaseKeepAlive(settings)  # warm connection pool + keep a serverless DB awake in work hours
+    keepalive.start()
+    usage = UsageFlusher()  # writes YouTube quota usage counts to the database
+    usage.start()
     try:
         yield
     finally:
+        await usage.stop()
+        await keepalive.stop()
+        await housekeeping.stop()
         await video_scheduler.stop()
         await video_tracker.shutdown()
         await orchestrator.shutdown()

@@ -60,6 +60,18 @@ class VideoTrackingScheduler:
             await runner(trigger)
         except Exception:  # a failed job must never kill the scheduler
             logger.exception("vt_scheduled_job_crashed job=%s", job_type)
+        await self._cleanup_files()
+
+    async def _cleanup_files(self) -> None:
+        """Delete old uploaded video lists (their rows are kept in the database)."""
+        try:
+            removed = await asyncio.to_thread(
+                repo.cleanup_upload_files, self.settings.upload_dir, self.settings.upload_file_retention_days
+            )
+            if removed:
+                log_event(logger, logging.INFO, "housekeeping_files_removed", module="video_performance", files=removed)
+        except Exception:
+            logger.exception("vt_file_cleanup_crashed")
 
     async def _catch_up(self) -> None:
         now = datetime.now(timezone.utc)
@@ -72,6 +84,7 @@ class VideoTrackingScheduler:
     async def _loop(self) -> None:
         await asyncio.sleep(STARTUP_DELAY_SECONDS)
         await self._catch_up()
+        await self._cleanup_files()
         while True:
             upcoming = sorted((next_run_utc(at), job) for job, at in self.times.items())
             due_at, job_type = upcoming[0]

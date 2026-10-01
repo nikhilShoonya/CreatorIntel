@@ -7,10 +7,12 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 
 from app.models.entities import Creator
+from app.utils.spreadsheet import keep_whole_numbers
 from app.utils.text import sanitize_spreadsheet_cell
 
 EXPORT_COLUMNS = [
     "Channel Name", "Platform", "Channel Link", "Subscribers / Followers", "Average Views",
+    "Avg Views (Long-form >3 min)", "Avg Views (Short-form <=3 min)",
     "Top Performing Video", "Top Video Views", "Top Video URL", "Engagement Rate (%)",
     "Engagement Basis", "Genre", "Sub-Genre", "Language", "Sentiment", "Status", "Notes",
 ]
@@ -26,6 +28,8 @@ def _row(creator: Creator) -> list:
         creator.channel_url,
         audience,
         round(creator.average_views) if creator.average_views is not None else None,
+        round(creator.average_views_long) if creator.average_views_long is not None else None,
+        round(creator.average_views_short) if creator.average_views_short is not None else None,
         creator.top_video_title,
         creator.top_video_views,
         creator.top_video_url,
@@ -42,7 +46,7 @@ def _row(creator: Creator) -> list:
 
 
 def _frame(creators: Iterable[Creator]) -> pd.DataFrame:
-    return pd.DataFrame([_row(c) for c in creators], columns=EXPORT_COLUMNS)
+    return keep_whole_numbers(pd.DataFrame([_row(c) for c in creators], columns=EXPORT_COLUMNS))
 
 
 def to_csv_bytes(creators: Iterable[Creator]) -> bytes:

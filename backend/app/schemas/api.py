@@ -25,6 +25,10 @@ class CreatorOut(BaseModel):
     subscriber_count: int | None
     average_views: float | None
     average_views_sample_count: int | None
+    average_views_long: float | None = None
+    average_views_long_count: int | None = None
+    average_views_short: float | None = None
+    average_views_short_count: int | None = None
 
     top_video_title: str | None
     top_video_url: str | None
@@ -119,6 +123,24 @@ class UploadOut(BaseModel):
     error_message: str | None
     created_at: UTCDateTime
     completed_at: UTCDateTime | None
+    # Original file retention: rows are kept in the database after the file is removed.
+    file_deleted_at: UTCDateTime | None = None
+    file_delete_after: UTCDateTime | None = None
+
+
+class UploadRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    row_number: int
+    channel_name: str | None
+    channel_link: str | None
+    outcome: str
+    message: str | None
+
+
+class UploadRowsOut(BaseModel):
+    upload: UploadOut
+    rows: list[UploadRowOut]
 
 
 class UploadDetailOut(UploadOut):

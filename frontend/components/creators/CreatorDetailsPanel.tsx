@@ -214,6 +214,20 @@ function DetailBody({ creator }: { creator: CreatorDetail }) {
           {formatCompact(creator.average_views)}
           {creator.median_views !== null && <span className="text-muted"> · median {formatCompact(creator.median_views)}</span>}
         </Row>
+        {creator.platform === "youtube" && (creator.average_views_long !== null || creator.average_views_short !== null) && (
+          <>
+            <Row label="Long-form avg" hint="Videos longer than 3 minutes">
+              {creator.average_views_long === null
+                ? "No long-form videos in the sample"
+                : `${formatCompact(creator.average_views_long)} · ${creator.average_views_long_count} videos`}
+            </Row>
+            <Row label="Short-form avg" hint="Videos up to 3 minutes (includes Shorts)">
+              {creator.average_views_short === null
+                ? "No short-form videos in the sample"
+                : `${formatCompact(creator.average_views_short)} · ${creator.average_views_short_count} videos`}
+            </Row>
+          </>
+        )}
         <Row label="Top performing video" hint={provenance.top_video && `Source: ${sourceLabel(provenance.top_video)}`}>
           {videoHref && creator.top_video_views !== null ? (
             <>

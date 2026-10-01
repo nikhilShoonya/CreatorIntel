@@ -109,6 +109,26 @@ class UploadOut(BaseModel):
     duplicates: int
     invalid: int
     created_at: UTC
+    # Original file retention: rows stay in the database after the file is removed.
+    file_deleted_at: UTC | None = None
+    file_delete_after: UTC | None = None
+
+
+class UploadRowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    row_number: int
+    creator_name: str | None
+    platform: str | None
+    video_link: str | None
+    username: str | None
+    status: str
+    message: str | None
+
+
+class UploadRowsOut(BaseModel):
+    upload: UploadOut
+    rows: list[UploadRowOut]
 
 
 class ImportRowOut(BaseModel):

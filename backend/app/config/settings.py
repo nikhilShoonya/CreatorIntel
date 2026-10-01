@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # One key, or several separated by commas (the next one is used when a key
     # is invalid or its daily quota is exhausted).
     youtube_api_key: str = ""
+    youtube_daily_quota: int = Field(default=10000, ge=1)  # units per key per day (Google's default)
 
     meta_app_id: str = ""
     meta_app_secret: str = ""
@@ -38,6 +39,10 @@ class Settings(BaseSettings):
 
     # --- Persistence ---------------------------------------------------
     database_url: str = f"sqlite:///{(BACKEND_DIR / 'creatorintel.db').as_posix()}"
+    db_pool_size: int = Field(default=10, ge=1, le=30)
+    # Keep a remote database (e.g. Neon, which suspends after ~5 idle minutes) awake during these local
+    # hours so the first page load is not slowed by a cold start. "" disables. Uses VIDEO_TRACKING_TIMEZONE.
+    db_keep_warm_hours: str = "09:00-21:00"
     upload_dir: Path = BACKEND_DIR / "uploads"
 
     # --- Processing ----------------------------------------------------
@@ -47,6 +52,9 @@ class Settings(BaseSettings):
     cache_ttl_hours: int = Field(default=24, ge=0)
     max_upload_size_mb: int = Field(default=10, ge=1, le=50)
     max_rows_per_upload: int = Field(default=1000, ge=1)
+    # Uploaded files are deleted after this many days; their rows stay in the database (0 = keep files forever)
+    upload_file_retention_days: int = Field(default=30, ge=0)
+    housekeeping_interval_hours: int = Field(default=6, ge=1, le=168)
 
     # --- HTTP behaviour -------------------------------------------------
     http_timeout_seconds: float = 20.0
@@ -68,6 +76,8 @@ class Settings(BaseSettings):
     # --- Web -------------------------------------------------------------
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     log_level: str = "INFO"
+    log_dir: Path = BACKEND_DIR / "logs"  # daily rotating log files
+    log_retention_days: int = Field(default=14, ge=1, le=365)
 
     @field_validator("database_url")
     @classmethod

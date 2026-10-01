@@ -1,11 +1,13 @@
-import { API_URL, ApiError, jsonInit, request, toQuery } from "@/lib/api";
+import { API_URL, ApiError, downloadFile, jsonInit, request, toQuery } from "@/lib/api";
 import type {
   VpCreator,
   VpDashboard,
   VpFilters,
   VpHistory,
   VpJob,
+  VpUpload,
   VpUploadResult,
+  VpUploadRow,
   VpVideo,
   VpVideoList,
 } from "@/types/videoPerformance";
@@ -48,6 +50,13 @@ export const vpApi = {
   deleteCreator: (id: number, deleteVideos: boolean) =>
     request<ActionResult>(`${BASE}/creators/${id}?delete_videos=${deleteVideos ? "true" : "false"}`, jsonInit("DELETE")),
   discover: (id: number) => request<ActionResult>(`${BASE}/creators/${id}/discover`, jsonInit("POST")),
+
+  uploads: () => request<VpUpload[]>(`${BASE}/uploads`),
+  uploadRows: (id: string) => request<{ upload: VpUpload; rows: VpUploadRow[] }>(`${BASE}/uploads/${encodeURIComponent(id)}/rows`),
+  downloadUploadRows: (id: string, format: "excel" | "csv") =>
+    downloadFile(`${BASE}/uploads/${encodeURIComponent(id)}/rows/export?format=${format}`, `video_rows.${format === "excel" ? "xlsx" : "csv"}`),
+  exportVideos: (kind: "excel" | "csv", filters: VpFilters) =>
+    downloadFile(`${BASE}/exports/${kind}${toQuery({ ...filters })}`, `video_performance.${kind === "excel" ? "xlsx" : "csv"}`),
 
   async upload(file: File): Promise<VpUploadResult> {
     const body = new FormData();

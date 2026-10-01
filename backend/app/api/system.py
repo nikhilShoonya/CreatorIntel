@@ -2,6 +2,8 @@ from fastapi import APIRouter
 
 from app.config.settings import get_settings
 from app.schemas.api import ConfigStatus
+from app.services.api_usage import YouTubeQuota, youtube_quota
+from app.services.meta_token import InstagramTokenStatus, instagram_token_status
 
 router = APIRouter(prefix="/api", tags=["system"])
 
@@ -29,3 +31,16 @@ def config_status() -> ConfigStatus:
         youtube_key_count=len(settings.youtube_api_keys),
         warnings=[w for w in (settings.instagram_token_problem,) if w],
     )
+
+
+@router.get("/config/youtube-quota", response_model=YouTubeQuota)
+def youtube_quota_today() -> YouTubeQuota:
+    """YouTube Data API units used today per key (as counted by this app)."""
+    return youtube_quota(get_settings())
+
+
+@router.get("/config/instagram-token", response_model=InstagramTokenStatus)
+async def instagram_token(refresh: bool = False) -> InstagramTokenStatus:
+    """Validity / expiry of the configured Meta token (cached a few minutes; never returns the token)."""
+    return await instagram_token_status(get_settings(), refresh=refresh)
+

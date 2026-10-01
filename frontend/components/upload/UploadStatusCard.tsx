@@ -65,6 +65,10 @@ export function UploadStatusCard({ upload, validating, validationError, onReuplo
   }
 
   const processing = upload.status === "processing";
+  // Invalid/unsupported links cannot be retried (they need fixing via Edit), so they are not counted.
+  const retryable = upload.items.filter(
+    (item) => (item.status === "Failed" || item.status === "Partial") && (item.platform === "youtube" || item.platform === "instagram"),
+  ).length;
   const total = upload.total_rows;
   const percent = total ? Math.round((upload.processed_rows / total) * 100) : 0;
   const allFailed = !processing && total > 0 && upload.failed_rows === total;
@@ -129,10 +133,10 @@ export function UploadStatusCard({ upload, validating, validationError, onReuplo
         {upload.partial_rows > 0 && <Stat label="Partial" value={upload.partial_rows} tone="warning" />}
         <Stat label="Failed" value={upload.failed_rows} tone={upload.failed_rows ? "danger" : undefined} />
       </div>
-      {!processing && upload.failed_rows + upload.partial_rows > 0 && (
+      {!processing && retryable > 0 && (
         <Button variant="soft" className="mt-3 w-full" onClick={onRetryFailed} disabled={retrying}>
           {retrying ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}
-          Retry failed &amp; partial ({upload.failed_rows + upload.partial_rows})
+          Retry failed &amp; partial ({retryable})
         </Button>
       )}
       {upload.duplicate_rows > 0 && (

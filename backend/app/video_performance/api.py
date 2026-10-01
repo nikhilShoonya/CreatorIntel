@@ -8,9 +8,12 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import Response
 
 from app.config.settings import get_settings
 from app.utils.logging import log_event
+from app.utils.spreadsheet import table_bytes
+from app.utils.time import as_utc, utcnow
 from app.utils.text import clean_text
 from app.utils.url_parser import parse_channel_link
 from app.video_performance import queries
@@ -30,6 +33,7 @@ from app.video_performance.schemas import (
     JobInfo,
     UploadOut,
     UploadResultOut,
+    UploadRowsOut,
     VideoCreateIn,
     VideoDetailOut,
     VideoListOut,
@@ -102,6 +106,73 @@ async def upload_videos(file: UploadFile = File(...), tracker: VideoTracker = De
 @router.get("/uploads", response_model=list[UploadOut])
 def list_uploads():
     return queries.uploads()
+
+
+_ROW_LABELS = {"added": "Added", "already_tracked": "Already tracked", "duplicate": "Duplicate", "invalid": "Invalid"}
+
+
+@router.get("/uploads/{upload_id}/rows", response_model=UploadRowsOut)
+def upload_rows(upload_id: str):
+    """The uploaded file's rows as stored in the database (available after the file is deleted)."""
+    found = queries.upload_rows(upload_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    upload, rows = found
+    return UploadRowsOut(upload=upload, rows=rows)
+
+
+def _file_response(content: bytes, kind: str, stem: str) -> Response:
+    ext, media = ("csv", "text/csv; charset=utf-8") if kind == "csv" else (
+        "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    return Response(content=content, media_type=media, headers={"Content-Disposition": f'attachment; filename="{stem}.{ext}"'})
+
+
+@router.get("/uploads/{upload_id}/rows/export")
+async def export_upload_rows(upload_id: str, format: Literal["csv", "excel"] = "excel"):
+    found = await run_in_threadpool(queries.upload_rows, upload_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    upload, rows = found
+    table = [[r.row_number, r.creator_name, r.platform, r.video_link, r.username, _ROW_LABELS.get(r.status, r.status), r.message] for r in rows]
+    columns = ["Row", "Creator Name", "Platform", "Video Link", "Username", "Result", "Notes"]
+    content = await run_in_threadpool(table_bytes, columns, table, "csv" if format == "csv" else "excel", "Uploaded rows")
+    return _file_response(content, "csv" if format == "csv" else "excel", f"{Path(upload.filename).stem[:80] or 'videos'}_rows")
+
+
+@router.get("/exports/{kind}")
+async def export_videos(
+    kind: Literal["excel", "csv"],
+    q: str | None = Query(default=None, max_length=200),
+    platform: Literal["youtube", "instagram"] | None = None,
+    creator: str | None = Query(default=None, max_length=300),
+    status: str | None = Query(default=None, max_length=20),
+    sort_by: queries.SortKey | None = None,
+    sort_dir: Literal["asc", "desc"] = "desc",
+):
+    """Tracked videos (respecting the table's filters) as Excel or CSV."""
+    filters = queries.VideoFilters(q=q or None, platform=platform, creator=creator or None, status=status,
+                                   sort_by=sort_by, sort_dir=sort_dir)
+    videos = await run_in_threadpool(queries.export_videos, filters)
+    columns = [
+        "Video", "Video URL", "Platform", "Creator", "Current Views", "Previous Views", "Views Gained", "Growth %",
+        "Likes", "Comments", "Engagement Rate (%)", "Sentiment", "Sentiment Confidence", "Tracking Status", "Notes",
+        "Last Checked (UTC)", "Published (UTC)", "Source",
+    ]
+    def fmt(value):
+        return as_utc(value).strftime("%Y-%m-%d %H:%M") if value else None
+
+    table = [
+        [
+            VideoOut.model_validate(v).display_title, v.video_url, "YouTube" if v.platform == "youtube" else "Instagram",
+            v.creator_name, v.current_views, v.previous_views, v.views_gained, v.growth_pct, v.likes, v.comments,
+            v.engagement_rate, v.sentiment, v.sentiment_confidence, v.status, v.status_reason,
+            fmt(v.last_checked_at), fmt(v.published_at), v.source,
+        ]
+        for v in videos
+    ]
+    content = await run_in_threadpool(table_bytes, columns, table, kind, "Tracked videos")
+    return _file_response(content, kind, f"video_performance_{utcnow().strftime('%Y%m%d_%H%M')}")
 
 
 # ----------------------------------------------------------------- videos

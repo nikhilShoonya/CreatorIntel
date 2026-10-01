@@ -51,6 +51,24 @@ class VtUpload(Base):
     duplicates: Mapped[int] = mapped_column(Integer, default=0)
     invalid: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # The original file is deleted after the retention period; its rows stay in video_tracking_upload_rows.
+    file_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class VtUploadRow(Base):
+    """Every row of an uploaded video list exactly as it was read."""
+
+    __tablename__ = "video_tracking_upload_rows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    upload_id: Mapped[str] = mapped_column(ForeignKey("video_tracking_uploads.id", ondelete="CASCADE"), index=True)
+    row_number: Mapped[int] = mapped_column(Integer)
+    creator_name: Mapped[str | None] = mapped_column(String(300))
+    platform: Mapped[str | None] = mapped_column(String(20))
+    video_link: Mapped[str | None] = mapped_column(String(2048))
+    username: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20))  # added | already_tracked | duplicate | invalid
+    message: Mapped[str | None] = mapped_column(Text)
 
 
 class VtCreator(Base):
@@ -163,3 +181,14 @@ class VtJobRun(Base):
     succeeded: Mapped[int] = mapped_column(Integer, default=0)
     failed: Mapped[int] = mapped_column(Integer, default=0)
     message: Mapped[str | None] = mapped_column(Text)
+
+
+class VtJobLock(Base):
+    """Cross-process lock so a daily job runs once even with several backend processes."""
+
+    __tablename__ = "video_tracking_job_locks"
+
+    job_type: Mapped[str] = mapped_column(String(40), primary_key=True)
+    owner: Mapped[str | None] = mapped_column(String(64))
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+

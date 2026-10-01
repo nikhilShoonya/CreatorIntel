@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.ingestion_agent import IngestionResult
 from app.config.settings import Settings
-from app.models.entities import Creator, CreatorStatus, Upload, UploadItem, UploadStatus
+from app.models.entities import Creator, CreatorStatus, Upload, UploadItem, UploadRow, UploadStatus
 from app.utils.logging import log_event
 from app.utils.time import as_utc, utcnow
 
@@ -28,9 +28,24 @@ def store_upload_file(settings: Settings, safe_name: str, content: bytes) -> str
 
 def _is_fresh(creator: Creator, ttl_hours: int) -> bool:
     fetched = as_utc(creator.data_fetched_at)
-    if ttl_hours <= 0 or fetched is None or creator.status not in (CreatorStatus.COMPLETED, CreatorStatus.PARTIAL):
+    # Only complete results are reused; Partial/Failed creators are fetched again on re-upload.
+    if ttl_hours <= 0 or fetched is None or creator.status != CreatorStatus.COMPLETED:
         return False
     return utcnow() - fetched < timedelta(hours=ttl_hours)
+
+
+def duplicate_upload_rows(upload_id: str, ingestion: IngestionResult) -> list[UploadRow]:
+    return [
+        UploadRow(
+            upload_id=upload_id,
+            row_number=dup.source_row,
+            channel_name=dup.channel_name,
+            channel_link=dup.channel_link,
+            outcome="duplicate",
+            message=f"Same channel as row {dup.duplicate_of_row}",
+        )
+        for dup in ingestion.duplicates
+    ]
 
 
 def upload_status_counts(db: Session, upload_ids: list[str]) -> dict[str, Counter]:
@@ -71,6 +86,7 @@ def create_upload(db: Session, settings: Settings, filename: str, stored_filenam
         status=UploadStatus.PROCESSING,
     )
     db.add(upload)
+    db.flush()  # assigns upload.id for the saved file rows
 
     existing = _existing_creators(db, ingestion)
     resolved: list[tuple[int, object, Creator, bool]] = []
@@ -102,6 +118,17 @@ def create_upload(db: Session, settings: Settings, filename: str, stored_filenam
             creator.status = CreatorStatus.PENDING
             creator.error_message = None
         resolved.append((position, row, creator, from_cache))
+        db.add(
+            UploadRow(
+                upload_id=upload.id,
+                row_number=row.source_row,
+                channel_name=row.channel_name,
+                channel_link=row.channel_link,
+                outcome="invalid" if row.error else ("cached" if from_cache else "queued"),
+                message=row.error or ("Recent data reused (fetched in the last 24 hours)" if from_cache else None),
+            )
+        )
+    db.add_all(duplicate_upload_rows(upload.id, ingestion))
 
     # One batched INSERT for new creators (ids come back via RETURNING), then one for the items.
     db.add_all(new_creators)

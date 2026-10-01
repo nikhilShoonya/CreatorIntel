@@ -16,6 +16,7 @@ os.environ.update(
         # Set CREATORINTEL_TEST_DATABASE_URL to run the suite against PostgreSQL instead.
         "DATABASE_URL": os.environ.get("CREATORINTEL_TEST_DATABASE_URL") or f"sqlite:///{(_TMP / 'test.db').as_posix()}",
         "UPLOAD_DIR": str(_TMP / "uploads"),
+        "LOG_DIR": str(_TMP / "logs"),
         "YOUTUBE_API_KEY": "test-youtube-key",
         "META_ACCESS_TOKEN": "test-meta-token",
         "META_APP_SECRET": "test-app-secret",

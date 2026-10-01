@@ -17,6 +17,7 @@ class ContentItem:
     comments: int | None = None
     tags: list[str] = field(default_factory=list)
     is_live_or_upcoming: bool = False
+    duration_seconds: int | None = None  # YouTube only
 
 
 @dataclass

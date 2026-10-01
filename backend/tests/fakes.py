@@ -37,7 +37,9 @@ def youtube_handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("search.list must not be used")
     if path == "channels":
         handle = params.get("forHandle", "").lower()
-        channel = YT_CHANNELS.get(handle)
+        channel = YT_CHANNELS.get(handle) or next(
+            (c for c in YT_CHANNELS.values() if params.get("id") and c["id"] == params.get("id")), None
+        )
         if channel is None:
             return httpx.Response(200, json={"items": []})
         return httpx.Response(200, json={"items": [{
@@ -56,7 +58,8 @@ def youtube_handler(request: httpx.Request) -> httpx.Response:
                 "snippet": {"title": v["title"], "description": "Market ka next move kya hoga?", "publishedAt": v["publishedAt"],
                             "tags": ["nifty", "stock market"], "liveBroadcastContent": "none"},
                 "statistics": {"viewCount": v["views"], "likeCount": v["likes"], "commentCount": v["comments"]},
-                "contentDetails": {"duration": "PT10M"},
+                # every 4th video is a Short (45 s); the rest are 10-minute videos
+                "contentDetails": {"duration": "PT45S" if int(v["id"][3:]) % 4 == 3 else "PT10M"},
             }
             for v in YT_VIDEOS if v["id"] in ids
         ]

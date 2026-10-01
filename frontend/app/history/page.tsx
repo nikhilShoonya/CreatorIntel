@@ -2,14 +2,49 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, History, Loader2, Trash2 } from "lucide-react";
+import { ArrowRight, FileText, History, Loader2, Trash2 } from "lucide-react";
 
 import { Card, EmptyState, ErrorBanner } from "@/components/ui/controls";
 import { ConfirmDialog } from "@/components/ui/Dialog";
+import { FileRowsDialog, FileStatusText, OutcomePill } from "@/components/ui/FileRowsDialog";
+import { useApi } from "@/hooks/useApi";
 import { useUploads } from "@/hooks/useData";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
-import type { UploadSummary } from "@/types";
+import type { UploadRow, UploadSummary } from "@/types";
+
+const OUTCOMES: Record<UploadRow["outcome"], { label: string; tone: "green" | "gray" | "amber" | "red" }> = {
+  queued: { label: "Analysed", tone: "green" },
+  cached: { label: "Reused recent data", tone: "gray" },
+  duplicate: { label: "Duplicate", tone: "amber" },
+  invalid: { label: "Invalid link", tone: "red" },
+};
+
+/** The saved rows of one upload (works after the original file was deleted). */
+function UploadFileData({ upload, onClose }: { upload: UploadSummary | null; onClose: () => void }) {
+  const { data, error } = useApi(upload ? `upload-rows:${upload.id}` : null, () => api.uploadRows(upload!.id));
+  return (
+    <FileRowsDialog<UploadRow>
+      open={upload !== null}
+      onClose={onClose}
+      filename={upload?.filename}
+      uploadedAt={upload?.created_at}
+      fileDeletedAt={data?.upload.file_deleted_at ?? upload?.file_deleted_at}
+      fileDeleteAfter={data?.upload.file_delete_after ?? upload?.file_delete_after}
+      rows={data?.rows}
+      error={error}
+      rowKey={(row) => row.row_number}
+      onDownload={(format) => api.downloadUploadRows(upload!.id, format)}
+      columns={[
+        { label: "Row", render: (r) => r.row_number, className: "w-14 tabular-nums text-muted" },
+        { label: "Channel Name", render: (r) => r.channel_name ?? "-" },
+        { label: "Channel Link", render: (r) => <span className="break-all text-slate-600">{r.channel_link || "-"}</span>, className: "min-w-[240px]" },
+        { label: "Result", render: (r) => <OutcomePill {...OUTCOMES[r.outcome]} /> },
+        { label: "Notes", render: (r) => <span className="text-muted">{r.message ?? ""}</span> },
+      ]}
+    />
+  );
+}
 
 function UploadStatusPill({ upload }: { upload: UploadSummary }) {
   if (upload.status === "processing")
@@ -38,6 +73,7 @@ export default function HistoryPage() {
   const [toDelete, setToDelete] = useState<UploadSummary | null>(null);
   const [alsoCreators, setAlsoCreators] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<UploadSummary | null>(null);
 
   async function confirmDelete() {
     if (!toDelete) return;
@@ -67,7 +103,7 @@ export default function HistoryPage() {
             <table className="w-full min-w-[900px] text-sm">
               <thead className="bg-slate-50 text-left text-xs font-semibold text-slate-600">
                 <tr>
-                  {["File", "Uploaded", "Total", "Successful", "Partial", "Failed", "Duplicates", "Status", ""].map((label) => (
+                  {["File", "Uploaded", "Total", "Successful", "Partial", "Failed", "Duplicates", "Status", "Original file", ""].map((label) => (
                     <th key={label} className="whitespace-nowrap border-b border-line px-4 py-3">
                       {label}
                     </th>
@@ -78,7 +114,7 @@ export default function HistoryPage() {
                 {!data
                   ? Array.from({ length: 3 }, (_, i) => (
                       <tr key={i}>
-                        <td colSpan={9} className="border-b border-line px-4 py-4">
+                        <td colSpan={10} className="border-b border-line px-4 py-4">
                           <div className="h-4 animate-pulse rounded bg-slate-100" />
                         </td>
                       </tr>
@@ -98,7 +134,19 @@ export default function HistoryPage() {
                           <UploadStatusPill upload={upload} />
                         </td>
                         <td className="border-b border-line px-4 py-3">
+                          <FileStatusText deletedAt={upload.file_deleted_at} deleteAfter={upload.file_delete_after} />
+                        </td>
+                        <td className="border-b border-line px-4 py-3">
                           <div className="flex items-center justify-end gap-3">
+                            <button
+                              type="button"
+                              onClick={() => setViewing(upload)}
+                              title="View the uploaded file's rows"
+                              aria-label={`View file data of ${upload.filename}`}
+                              className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-ink"
+                            >
+                              <FileText size={16} />
+                            </button>
                             <Link href={`/creators?upload=${upload.id}`} className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-accent hover:underline">
                               View creators
                               <ArrowRight size={14} />
@@ -125,6 +173,8 @@ export default function HistoryPage() {
           </div>
         )}
       </Card>
+
+      <UploadFileData upload={viewing} onClose={() => setViewing(null)} />
 
       <ConfirmDialog
         open={toDelete !== null}

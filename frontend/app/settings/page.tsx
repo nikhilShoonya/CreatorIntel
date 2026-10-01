@@ -3,6 +3,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, Cpu, Database, SlidersHorizontal, XCircle } from "lucide-react";
 
+import { TokenStatusCard, YouTubeQuotaCard } from "@/components/layout/TokenHealth";
 import { USER_NAME_KEY } from "@/components/layout/Topbar";
 import { Button, Card, ErrorBanner } from "@/components/ui/controls";
 import { PlatformIcon } from "@/components/ui/PlatformIcon";
@@ -96,6 +97,7 @@ export default function SettingsPage() {
               detail="Channel statistics, recent uploads and video metrics."
               envVar="YOUTUBE_API_KEY"
             />
+            {config.youtube_configured && <YouTubeQuotaCard />}
             <Integration
               icon={<PlatformIcon platform="instagram" size={22} />}
               name={`Instagram Graph API (${config.meta_api_version})`}
@@ -103,6 +105,7 @@ export default function SettingsPage() {
               detail="Business Discovery for Instagram Professional (Business/Creator) accounts."
               envVar="META_ACCESS_TOKEN"
             />
+            {config.instagram_configured && <TokenStatusCard />}
             <Integration
               icon={<Cpu size={22} className="text-slate-500" />}
               name={`AI content analysis - Groq (${config.ai_model})`}

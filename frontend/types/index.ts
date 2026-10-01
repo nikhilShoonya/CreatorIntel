@@ -20,6 +20,10 @@ export interface Creator {
   audience_count: number | null;
   average_views: number | null;
   average_views_sample_count: number | null;
+  average_views_long: number | null;
+  average_views_long_count: number | null;
+  average_views_short: number | null;
+  average_views_short_count: number | null;
   top_video_title: string | null;
   top_video_url: string | null;
   top_video_views: number | null;
@@ -97,6 +101,51 @@ export interface UploadSummary {
   error_message: string | null;
   created_at: string;
   completed_at: string | null;
+  /** Original file retention: the rows stay in the database after the file is removed. */
+  file_deleted_at: string | null;
+  file_delete_after: string | null;
+}
+
+export interface UploadRow {
+  row_number: number;
+  channel_name: string | null;
+  channel_link: string | null;
+  outcome: "queued" | "cached" | "duplicate" | "invalid";
+  message: string | null;
+}
+
+export interface UploadRows {
+  upload: UploadSummary;
+  rows: UploadRow[];
+}
+
+export interface YouTubeKeyUsage {
+  label: string;
+  fingerprint: string;
+  units: number;
+  calls: number;
+  limit: number;
+  percent: number;
+  quota_exceeded: boolean;
+}
+
+export interface YouTubeQuota {
+  day: string;
+  resets_at: string;
+  daily_limit_per_key: number;
+  total_units: number;
+  keys: YouTubeKeyUsage[];
+  note: string;
+}
+
+export interface InstagramTokenStatus {
+  state: "ok" | "expiring" | "expired" | "invalid" | "missing" | "wrong_type" | "unknown" | "error";
+  message: string;
+  expires_at: string | null;
+  days_left: number | null;
+  never_expires: boolean;
+  missing_permissions: string[];
+  checked_at: string;
 }
 
 export interface UploadItem {

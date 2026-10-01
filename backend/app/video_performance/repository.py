@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from sqlalchemy import and_, delete, exists, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.db import ReadSessionLocal, session_scope
@@ -212,6 +213,37 @@ def finish_job(run_id: int, processed: int, succeeded: int, failed: int, message
             run.processed, run.succeeded, run.failed, run.message = processed, succeeded, failed, message
 
 
+def acquire_job_lock(job_type: str, owner: str, hours: int = 6) -> bool:
+    """Atomically claim a job (works across processes). Expired locks (crashed runs) can be taken over."""
+    from app.video_performance.models import VtJobLock
+
+    now = utcnow()
+    with session_scope() as db:
+        if db.get(VtJobLock, job_type) is None:
+            try:
+                with db.begin_nested():
+                    db.add(VtJobLock(job_type=job_type))
+            except IntegrityError:
+                pass  # another process inserted it first
+        claimed = db.execute(
+            update(VtJobLock)
+            .where(VtJobLock.job_type == job_type, or_(VtJobLock.locked_until.is_(None), VtJobLock.locked_until < now))
+            .values(owner=owner, locked_until=now + timedelta(hours=hours))
+        ).rowcount
+        return claimed == 1
+
+
+def release_job_lock(job_type: str, owner: str) -> None:
+    from app.video_performance.models import VtJobLock
+
+    with session_scope() as db:
+        db.execute(
+            update(VtJobLock)
+            .where(VtJobLock.job_type == job_type, VtJobLock.owner == owner)
+            .values(owner=None, locked_until=None)
+        )
+
+
 def last_completed_run(job_type: str) -> datetime | None:
     with read_scope() as db:
         return as_utc(
@@ -234,7 +266,7 @@ def latest_runs(limit_per_type: int = 1) -> list[VtJobRun]:
 
 
 # ------------------------------------------------------------------- creators
-def create_creator(name: str, parsed: ParsedLink) -> int:
+def _create_creator(name: str, parsed: ParsedLink) -> int:
     with session_scope() as db:
         existing = db.scalar(
             select(VtCreator).where(
@@ -375,7 +407,7 @@ def enabled_creator_ids() -> list[int]:
 
 
 # --------------------------------------------------------------------- videos
-def add_video(
+def _add_video(
     parsed: ParsedVideo, creator_name: str | None, owner_username: str | None, source: str, upload_id: str | None = None
 ) -> int:
     with session_scope() as db:
@@ -558,9 +590,9 @@ def has_sentiment(video_id: int) -> bool:
 
 
 # --------------------------------------------------------------------- import
-def import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, list[int]]:
+def _import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, list[int]]:
     """Insert new videos from an import in bulk and record the upload. Returns (upload_id, new video IDs)."""
-    from app.video_performance.models import VtUpload
+    from app.video_performance.models import VtUpload, VtUploadRow
 
     candidates = [r for r in rows if r.status == "pending"]
     tracked = existing_identifiers([(r.parsed.platform, r.parsed.identifier) for r in candidates])
@@ -602,8 +634,99 @@ def import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, lis
                     video.creator_name = video.creator_name or creator.creator_name
         db.add_all(new_videos)
         db.flush()
+        db.add_all(
+            VtUploadRow(
+                upload_id=upload.id,
+                row_number=r.row,
+                creator_name=r.creator_name,
+                platform=r.parsed.platform or r.raw_platform,
+                video_link=r.raw_link,
+                username=r.owner_username,
+                status=r.status,
+                message=r.message,
+            )
+            for r in rows
+        )
         upload.added = len(new_videos)
         upload.already_tracked = sum(1 for r in rows if r.status == "already_tracked")
         upload.duplicates = sum(1 for r in rows if r.status == "duplicate")
         upload.invalid = sum(1 for r in rows if r.status == "invalid")
         return upload.id, [v.id for v in new_videos]
+
+
+# ------------------------------------------------- concurrency-safe wrappers
+# Two people adding the same video/creator at the same moment hit the unique constraints;
+# report that as a normal conflict instead of a server error.
+def create_creator(name: str, parsed: ParsedLink) -> int:
+    try:
+        return _create_creator(name, parsed)
+    except IntegrityError as exc:
+        raise Conflict("This creator is already tracked") from exc
+
+
+def add_video(
+    parsed: ParsedVideo, creator_name: str | None, owner_username: str | None, source: str, upload_id: str | None = None
+) -> int:
+    try:
+        return _add_video(parsed, creator_name, owner_username, source, upload_id)
+    except IntegrityError as exc:
+        raise Conflict("This video is already being tracked") from exc
+
+
+def import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, list[int]]:
+    for attempt in (1, 2):
+        try:
+            return _import_rows(filename, stored, rows)
+        except IntegrityError:
+            if attempt == 2:
+                raise
+            for row in rows:  # retry: rows the concurrent import added now count as already tracked
+                if row.status == "added":
+                    row.status = "pending"
+    raise AssertionError("unreachable")
+
+
+# ---------------------------------------------------------------- housekeeping
+def cleanup_upload_files(upload_dir, retention_days: int) -> int:
+    """Delete uploaded video lists older than the retention period; their rows stay in
+    video_tracking_upload_rows (older uploads are back-filled from the file first). Returns files removed."""
+    from pathlib import Path
+
+    from app.video_performance.ingest import ImportError_, parse_import
+    from app.video_performance.models import VtUpload, VtUploadRow
+
+    if retention_days <= 0:
+        return 0
+    cutoff = utcnow() - timedelta(days=retention_days)
+    removed = 0
+    with session_scope() as db:
+        uploads = db.scalars(
+            select(VtUpload).where(
+                VtUpload.created_at < cutoff, VtUpload.file_deleted_at.is_(None), VtUpload.stored_filename.is_not(None)
+            )
+        ).all()
+        for upload in uploads:
+            path = Path(upload_dir) / Path(upload.stored_filename).name
+            has_rows = db.scalar(select(exists().where(VtUploadRow.upload_id == upload.id)))
+            if not has_rows and path.exists():
+                try:
+                    parsed = parse_import(upload.filename, path.read_bytes(), 50 * 1024 * 1024)
+                except (OSError, ImportError_):
+                    continue  # keep the file: its rows could not be saved
+                db.add_all(
+                    VtUploadRow(
+                        upload_id=upload.id, row_number=r.row, creator_name=r.creator_name,
+                        platform=r.parsed.platform or r.raw_platform, video_link=r.raw_link, username=r.owner_username,
+                        status="invalid" if r.status == "invalid" else ("duplicate" if r.status == "duplicate" else "added"),
+                        message=r.message,
+                    )
+                    for r in parsed.rows
+                )
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
+            upload.file_deleted_at = utcnow()
+            removed += 1
+    return removed
+

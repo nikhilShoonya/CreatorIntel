@@ -10,12 +10,15 @@ All DB work runs in worker threads (remote database latency never blocks the eve
 import asyncio
 import logging
 import time
+import uuid
+from datetime import timedelta
 from collections import defaultdict
 from collections.abc import Coroutine
 from typing import Any
 
 from app.config.settings import Settings, get_settings
 from app.utils.logging import log_event
+from app.utils.time import utcnow
 from app.utils.url_parser import parse_channel_link
 from app.video_performance import repository as repo
 from app.video_performance.models import JobType
@@ -32,6 +35,7 @@ from app.video_performance.sentiment import VideoSentimentAnalyzer
 logger = logging.getLogger("creatorintel.video_performance")
 
 DISCOVERY_LOOKBACK = 15  # latest uploads/media checked per creator per run
+SCHEDULED_MIN_GAP_HOURS = 20  # a scheduled run is skipped if the job already completed this recently
 
 
 class VideoTracker:
@@ -50,6 +54,7 @@ class VideoTracker:
         self._ai_semaphore = asyncio.Semaphore(3)
         self._job_locks = {JobType.METRICS_REFRESH: asyncio.Lock(), JobType.CREATOR_DISCOVERY: asyncio.Lock()}
         self._tasks: set[asyncio.Task] = set()
+        self._in_flight: set[int] = set()
 
     # ------------------------------------------------------------ scheduling
     def _schedule(self, coro: Coroutine[Any, Any, Any], name: str) -> None:
@@ -92,8 +97,19 @@ class VideoTracker:
     # ------------------------------------------------------------ processing
     async def process_videos(self, video_ids: list[int]) -> tuple[int, int]:
         """Fetch + store metrics for the given videos. Returns (succeeded, failed)."""
+        # Skip videos another task is already checking (e.g. "Refresh now" during the daily job).
+        wanted = sorted(set(video_ids) - self._in_flight)
+        if not wanted:
+            return 0, 0
+        self._in_flight.update(wanted)
+        try:
+            return await self._process_videos(wanted)
+        finally:
+            self._in_flight.difference_update(wanted)
+
+    async def _process_videos(self, video_ids: list[int]) -> tuple[int, int]:
         started = time.perf_counter()
-        rows = await asyncio.to_thread(repo.claim_videos, sorted(set(video_ids)))
+        rows = await asyncio.to_thread(repo.claim_videos, video_ids)
         results: dict[int, VideoMetrics | PlatformError] = {}
 
         youtube_rows = [r for r in rows if r["platform"] == "youtube"]
@@ -278,36 +294,57 @@ class VideoTracker:
     # ----------------------------------------------------------------- jobs
     async def run_metrics_refresh(self, trigger: str) -> None:
         """JOB 1 - refresh every actively tracked video (daily)."""
-        async with self._job_locks[JobType.METRICS_REFRESH]:
-            run_id = await asyncio.to_thread(repo.start_job, JobType.METRICS_REFRESH, trigger)
-            started = time.perf_counter()
-            succeeded = failed = total = 0
-            try:
-                ids = await asyncio.to_thread(repo.videos_due_for_refresh, self.settings.video_tracking_max_days)
-                total = len(ids)
-                for start in range(0, len(ids), 200):  # bounded batches
-                    ok, bad = await self.process_videos(ids[start : start + 200])
-                    succeeded, failed = succeeded + ok, failed + bad
-                message = f"Refreshed {succeeded} of {total} videos in {time.perf_counter() - started:.0f}s"
-                await asyncio.to_thread(repo.finish_job, run_id, total, succeeded, failed, message)
-            except Exception as exc:
-                logger.exception("vt_refresh_job_crashed")
-                await asyncio.to_thread(repo.finish_job, run_id, total, succeeded, failed, f"Job stopped: {type(exc).__name__}", False)
-            log_event(logger, logging.INFO, "vt_job_metrics_refresh", trigger=trigger, total=total, succeeded=succeeded, failed=failed)
+        await self._exclusive(JobType.METRICS_REFRESH, trigger, self._metrics_refresh)
 
     async def run_discovery(self, trigger: str) -> None:
         """JOB 2 - look for newly published videos of every enabled creator (daily)."""
-        async with self._job_locks[JobType.CREATOR_DISCOVERY]:
-            run_id = await asyncio.to_thread(repo.start_job, JobType.CREATOR_DISCOVERY, trigger)
-            started = time.perf_counter()
-            ok = failed = new = total = 0
+        await self._exclusive(JobType.CREATOR_DISCOVERY, trigger, self._discovery)
+
+    async def _exclusive(self, job_type: str, trigger: str, body) -> None:
+        """Run a job at most once at a time - in this process and across processes sharing the database."""
+        async with self._job_locks[job_type]:
+            if trigger != "manual":
+                last = await asyncio.to_thread(repo.last_completed_run, job_type)
+                if last is not None and utcnow() - last < timedelta(hours=SCHEDULED_MIN_GAP_HOURS):
+                    log_event(logger, logging.INFO, "vt_job_skipped_recent_run", job=job_type, trigger=trigger)
+                    return
+            owner = uuid.uuid4().hex
+            if not await asyncio.to_thread(repo.acquire_job_lock, job_type, owner):
+                log_event(logger, logging.INFO, "vt_job_skipped_running_elsewhere", job=job_type, trigger=trigger)
+                return
             try:
-                creator_ids = await asyncio.to_thread(repo.enabled_creator_ids)
-                total = len(creator_ids)
-                ok, failed, new = await self.discover(creator_ids)
-                message = f"Checked {total} creators, {new} new videos, in {time.perf_counter() - started:.0f}s"
-                await asyncio.to_thread(repo.finish_job, run_id, total, ok, failed, message)
-            except Exception as exc:
-                logger.exception("vt_discovery_job_crashed")
-                await asyncio.to_thread(repo.finish_job, run_id, total, ok, failed, f"Job stopped: {type(exc).__name__}", False)
-            log_event(logger, logging.INFO, "vt_job_creator_discovery", trigger=trigger, creators=total, new_videos=new, failed=failed)
+                await body(trigger)
+            finally:
+                await asyncio.to_thread(repo.release_job_lock, job_type, owner)
+
+    async def _metrics_refresh(self, trigger: str) -> None:
+        run_id = await asyncio.to_thread(repo.start_job, JobType.METRICS_REFRESH, trigger)
+        started = time.perf_counter()
+        succeeded = failed = total = 0
+        try:
+            ids = await asyncio.to_thread(repo.videos_due_for_refresh, self.settings.video_tracking_max_days)
+            total = len(ids)
+            for start in range(0, len(ids), 200):  # bounded batches
+                ok, bad = await self.process_videos(ids[start : start + 200])
+                succeeded, failed = succeeded + ok, failed + bad
+            message = f"Refreshed {succeeded} of {total} videos in {time.perf_counter() - started:.0f}s"
+            await asyncio.to_thread(repo.finish_job, run_id, total, succeeded, failed, message)
+        except Exception as exc:
+            logger.exception("vt_refresh_job_crashed")
+            await asyncio.to_thread(repo.finish_job, run_id, total, succeeded, failed, f"Job stopped: {type(exc).__name__}", False)
+        log_event(logger, logging.INFO, "vt_job_metrics_refresh", trigger=trigger, total=total, succeeded=succeeded, failed=failed)
+
+    async def _discovery(self, trigger: str) -> None:
+        run_id = await asyncio.to_thread(repo.start_job, JobType.CREATOR_DISCOVERY, trigger)
+        started = time.perf_counter()
+        ok = failed = new = total = 0
+        try:
+            creator_ids = await asyncio.to_thread(repo.enabled_creator_ids)
+            total = len(creator_ids)
+            ok, failed, new = await self.discover(creator_ids)
+            message = f"Checked {total} creators, {new} new videos, in {time.perf_counter() - started:.0f}s"
+            await asyncio.to_thread(repo.finish_job, run_id, total, ok, failed, message)
+        except Exception as exc:
+            logger.exception("vt_discovery_job_crashed")
+            await asyncio.to_thread(repo.finish_job, run_id, total, ok, failed, f"Job stopped: {type(exc).__name__}", False)
+        log_event(logger, logging.INFO, "vt_job_creator_discovery", trigger=trigger, creators=total, new_videos=new, failed=failed)

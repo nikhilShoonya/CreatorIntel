@@ -10,3 +10,4 @@ httpx
 python-multipart
 psycopg[binary]
 tzdata
+alembic

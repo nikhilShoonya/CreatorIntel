@@ -4,7 +4,10 @@ import type {
   CreatorFilters,
   CreatorListResponse,
   Facets,
+  InstagramTokenStatus,
+  YouTubeQuota,
   UploadDetail,
+  UploadRows,
   UploadSummary,
 } from "@/types";
 
@@ -57,6 +60,27 @@ export function jsonInit(method: string, body?: unknown): RequestInit {
   };
 }
 
+/** Download a file from the backend and save it with the server-provided filename. */
+export async function downloadFile(path: string, fallbackName: string): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`);
+  } catch {
+    throw new ApiError(`Cannot reach the backend at ${API_URL}. Is it running?`, 0);
+  }
+  if (!response.ok) throw new ApiError(`Download failed (${response.status})`, response.status);
+  const blob = await response.blob();
+  const match = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "");
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = match?.[1] ?? fallbackName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 export interface DeleteResult {
   deleted: number;
   message: string;
@@ -93,27 +117,14 @@ export const api = {
       jsonInit("DELETE"),
     ),
 
-  async download(kind: "excel" | "csv", filters: CreatorFilters): Promise<void> {
+  download(kind: "excel" | "csv", filters: CreatorFilters): Promise<void> {
     const { sort_by, sort_dir, ...rest } = filters;
-    const query = toQuery({ ...rest, sort_by, sort_dir });
-    let response: Response;
-    try {
-      response = await fetch(`${API_URL}/api/exports/${kind}${query}`);
-    } catch {
-      throw new ApiError(`Cannot reach the backend at ${API_URL}. Is it running?`, 0);
-    }
-    if (!response.ok) throw new ApiError(`Export failed (${response.status})`, response.status);
-    const blob = await response.blob();
-    const disposition = response.headers.get("Content-Disposition") ?? "";
-    const match = /filename="([^"]+)"/.exec(disposition);
-    const filename = match?.[1] ?? `creatorintel_export.${kind === "excel" ? "xlsx" : "csv"}`;
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
+    return downloadFile(`/api/exports/${kind}${toQuery({ ...rest, sort_by, sort_dir })}`, `creatorintel_export.${kind === "excel" ? "xlsx" : "csv"}`);
   },
+  uploadRows: (id: string) => request<UploadRows>(`/api/uploads/${encodeURIComponent(id)}/rows`),
+  downloadUploadRows: (id: string, format: "excel" | "csv") =>
+    downloadFile(`/api/uploads/${encodeURIComponent(id)}/rows/export?format=${format}`, `upload_rows.${format === "excel" ? "xlsx" : "csv"}`),
+  youtubeQuota: () => request<YouTubeQuota>("/api/config/youtube-quota"),
+  instagramToken: (refresh = false) =>
+    request<InstagramTokenStatus>(`/api/config/instagram-token${refresh ? "?refresh=true" : ""}`),
 };

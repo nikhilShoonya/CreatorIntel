@@ -434,7 +434,7 @@ function CreatorRow({
       </td>
       <td
         className={`${td} text-slate-800 group-hover:bg-slate-50`}
-        title={creator.average_views_sample_count ? `Average of the latest ${creator.average_views_sample_count}` : undefined}
+        title={averageTooltip(creator)}
       >
         {creator.average_views === null ? NA_CELL : formatCompact(creator.average_views)}
       </td>
@@ -471,4 +471,12 @@ function SkeletonRow() {
       ))}
     </tr>
   );
+}
+
+function averageTooltip(creator: Creator): string | undefined {
+  if (!creator.average_views_sample_count) return undefined;
+  const parts = [`Average of the latest ${creator.average_views_sample_count}`];
+  if (creator.average_views_long !== null) parts.push(`Long-form (>3 min): ${formatCompact(creator.average_views_long)}`);
+  if (creator.average_views_short !== null) parts.push(`Short-form (<=3 min): ${formatCompact(creator.average_views_short)}`);
+  return parts.join("\n");
 }

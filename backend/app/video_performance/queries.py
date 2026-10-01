@@ -1,6 +1,7 @@
 """Read queries for the Video Performance API (each opens its own read-only session)."""
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Literal
@@ -8,7 +9,18 @@ from typing import Literal
 from sqlalchemy import case, func, or_, select
 
 from app.utils.time import utcnow
-from app.video_performance.models import CreatorTrackingStatus, VideoStatus, VtCreator, VtSentiment, VtUpload, VtVideo, VtViewSnapshot
+from app.config.settings import get_settings
+from app.utils.time import as_utc
+from app.video_performance.models import (
+    CreatorTrackingStatus,
+    VideoStatus,
+    VtCreator,
+    VtSentiment,
+    VtUpload,
+    VtUploadRow,
+    VtVideo,
+    VtViewSnapshot,
+)
 from app.video_performance.repository import read_scope
 from app.video_performance.schemas import (
     CreatorOut,
@@ -17,6 +29,7 @@ from app.video_performance.schemas import (
     SentimentCounts,
     SnapshotOut,
     UploadOut,
+    UploadRowOut,
     VideoOut,
 )
 from app.video_performance.timeutil import local_day_start_utc
@@ -40,7 +53,8 @@ def _escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def list_videos(filters: VideoFilters, page: int, page_size: int) -> tuple[list[VideoOut], int, int, dict[str, int]]:
+def _video_query(filters: VideoFilters):
+    """(filtered + sorted statement, statement for per-status counts)."""
     stmt = select(VtVideo)
     if filters.q:
         term = f"%{_escape(filters.q.strip().lower())}%"
@@ -69,19 +83,37 @@ def list_videos(filters: VideoFilters, page: int, page_size: int) -> tuple[list[
         stmt = stmt.order_by(ordered.nulls_last(), VtVideo.id.desc())
     else:
         stmt = stmt.order_by(VtVideo.created_at.desc(), VtVideo.id.desc())
+    return stmt, status_stmt
 
+
+def export_videos(filters: VideoFilters, limit: int = 20000) -> list[VtVideo]:
+    stmt, _ = _video_query(filters)
+    with read_scope() as db:
+        return list(db.scalars(stmt.limit(limit)))
+
+
+def list_videos(filters: VideoFilters, page: int, page_size: int) -> tuple[list[VideoOut], int, int, dict[str, int]]:
+    stmt, status_stmt = _video_query(filters)
+    counts_sub = status_stmt.with_only_columns(VtVideo.status).subquery()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        counts_future = pool.submit(_status_counts, select(counts_sub.c.status, func.count()).group_by(counts_sub.c.status))
+        items, total = _page(stmt, page, page_size)
+        status_counts = counts_future.result()
+    return items, total, max(1, math.ceil(total / page_size)), status_counts
+
+
+def _status_counts(stmt) -> dict[str, int]:
+    with read_scope() as db:
+        return {status: count for status, count in db.execute(stmt)}
+
+
+def _page(stmt, page: int, page_size: int) -> tuple[list[VideoOut], int]:
     with read_scope() as db:
         rows = db.execute(
             stmt.add_columns(func.count().over().label("total")).offset((page - 1) * page_size).limit(page_size)
         ).all()
         total = rows[0].total if rows else db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery())) or 0
-        counts_sub = status_stmt.with_only_columns(VtVideo.status).subquery()
-        status_counts = {
-            status: count
-            for status, count in db.execute(select(counts_sub.c.status, func.count()).group_by(counts_sub.c.status))
-        }
-        items = [VideoOut.model_validate(row[0]) for row in rows]
-    return items, total, max(1, math.ceil(total / page_size)), status_counts
+        return [VideoOut.model_validate(row[0]) for row in rows], total
 
 
 def creator_names() -> list[str]:
@@ -129,9 +161,28 @@ def creators() -> list[CreatorOut]:
         return result
 
 
+def _upload_out(upload: VtUpload) -> UploadOut:
+    out = UploadOut.model_validate(upload)
+    retention = get_settings().upload_file_retention_days
+    if upload.file_deleted_at is None and upload.stored_filename and retention > 0:
+        out.file_delete_after = as_utc(upload.created_at) + timedelta(days=retention)
+    return out
+
+
 def uploads(limit: int = 50) -> list[UploadOut]:
     with read_scope() as db:
-        return [UploadOut.model_validate(u) for u in db.scalars(select(VtUpload).order_by(VtUpload.created_at.desc()).limit(limit))]
+        return [_upload_out(u) for u in db.scalars(select(VtUpload).order_by(VtUpload.created_at.desc()).limit(limit))]
+
+
+def upload_rows(upload_id: str) -> tuple[UploadOut, list[UploadRowOut]] | None:
+    with read_scope() as db:
+        upload = db.get(VtUpload, upload_id)
+        if upload is None:
+            return None
+        rows = db.scalars(
+            select(VtUploadRow).where(VtUploadRow.upload_id == upload_id).order_by(VtUploadRow.row_number)
+        ).all()
+        return _upload_out(upload), [UploadRowOut.model_validate(r) for r in rows]
 
 
 # ------------------------------------------------------------------ dashboard

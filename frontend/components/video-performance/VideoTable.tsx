@@ -5,9 +5,14 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  ChevronDown,
+  Download,
   ExternalLink,
+  FileSpreadsheet,
+  FileText,
   History,
   ListVideo,
+  Loader2,
   MoreVertical,
   Pause,
   Pencil,
@@ -55,6 +60,7 @@ export function VideoTable({ refreshToken, onToast, onChanged }: Props) {
   const [editing, setEditing] = useState<VpVideo | null>(null);
   const [historyId, setHistoryId] = useState<number | null>(null);
   const [deleting, setDeleting] = useState<VpVideo[] | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const q = useDebounce(search.trim(), 300);
   const filters: VpFilters = useMemo(
@@ -103,6 +109,17 @@ export function VideoTable({ refreshToken, onToast, onChanged }: Props) {
     }
   }
 
+  async function exportAs(kind: "excel" | "csv") {
+    setExporting(true);
+    try {
+      await vpApi.exportVideos(kind, filters); // same filters and sort as the table
+    } catch (err) {
+      onToast("error", err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   function toggleSort(sortKey: VpSortKey) {
     resetPaging();
     setSort((current) => (!current || current.key !== sortKey ? { key: sortKey, dir: "desc" } : current.dir === "desc" ? { key: sortKey, dir: "asc" } : null));
@@ -148,7 +165,22 @@ export function VideoTable({ refreshToken, onToast, onChanged }: Props) {
             <X size={15} /> Clear
           </Button>
         )}
-        <div className="ml-auto">
+        <div className="ml-auto flex gap-2">
+          <Menu
+            label="Export tracked videos"
+            width={180}
+            trigger={(props) => (
+              <Button variant="soft" disabled={!data || data.total === 0 || exporting} {...props}>
+                {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                Export
+                <ChevronDown size={14} />
+              </Button>
+            )}
+            items={[
+              { label: "Export Excel", icon: <FileSpreadsheet size={15} className="text-emerald-600" />, onSelect: () => exportAs("excel") },
+              { label: "Export CSV", icon: <FileText size={15} className="text-slate-500" />, onSelect: () => exportAs("csv") },
+            ]}
+          />
           <Button onClick={() => act(() => vpApi.retryFailed())} disabled={failedCount === 0} title="Retry every video whose last check failed">
             <RotateCcw size={15} />
             Retry failed{failedCount ? ` (${failedCount})` : ""}

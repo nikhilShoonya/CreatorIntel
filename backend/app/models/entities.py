@@ -50,6 +50,11 @@ class Creator(Base):
     average_views: Mapped[float | None] = mapped_column(Float)
     average_views_sample_count: Mapped[int | None] = mapped_column(Integer)
     median_views: Mapped[float | None] = mapped_column(Float)
+    # YouTube only: averages split by format (short-form = duration <= 3 min, which covers Shorts)
+    average_views_long: Mapped[float | None] = mapped_column(Float)
+    average_views_long_count: Mapped[int | None] = mapped_column(Integer)
+    average_views_short: Mapped[float | None] = mapped_column(Float)
+    average_views_short_count: Mapped[int | None] = mapped_column(Integer)
 
     top_video_title: Mapped[str | None] = mapped_column(String(500))
     top_video_url: Mapped[str | None] = mapped_column(String(2048))
@@ -103,6 +108,8 @@ class Upload(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The original file is deleted after the retention period; its rows stay in upload_rows.
+    file_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     items: Mapped[list["UploadItem"]] = relationship(
         back_populates="upload", cascade="all, delete-orphan", order_by="UploadItem.position"
@@ -124,3 +131,18 @@ class UploadItem(Base):
 
     upload: Mapped[Upload] = relationship(back_populates="items")
     creator: Mapped[Creator] = relationship(back_populates="items")
+
+
+class UploadRow(Base):
+    """Every row of an uploaded file exactly as it was read (kept after the file itself is deleted)."""
+
+    __tablename__ = "upload_rows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    upload_id: Mapped[str] = mapped_column(ForeignKey("uploads.id", ondelete="CASCADE"), index=True)
+    row_number: Mapped[int] = mapped_column(Integer)  # spreadsheet row (header = 1)
+    channel_name: Mapped[str | None] = mapped_column(String(300))
+    channel_link: Mapped[str | None] = mapped_column(String(2048))
+    outcome: Mapped[str] = mapped_column(String(20))  # queued | cached | duplicate | invalid
+    message: Mapped[str | None] = mapped_column(Text)
+

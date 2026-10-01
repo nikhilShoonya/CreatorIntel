@@ -1,5 +1,6 @@
 """Excel/CSV import for Video Performance (Creator Name, Platform, Video Link [, Username])."""
 
+import csv
 import io
 import re
 from dataclasses import dataclass, field
@@ -12,6 +13,7 @@ from app.video_performance.urls import ParsedVideo, parse_instagram_handle, pars
 
 ALLOWED = {".xlsx", ".xls", ".csv"}
 MAX_ROWS = 2000
+HEADER_SEARCH_ROWS = 10
 
 _LINK = {"videolink", "videourl", "link", "url", "reellink", "reelurl", "video", "postlink", "posturl", "videos"}
 _CREATOR = {"creatorname", "creator", "channelname", "channel", "name", "influencer", "influencername", "accountname"}
@@ -34,6 +36,8 @@ class ImportRow:
     owner_username: str | None
     status: str = "pending"  # added | already_tracked | duplicate | invalid
     message: str | None = None
+    raw_link: str | None = None
+    raw_platform: str | None = None
 
 
 @dataclass
@@ -62,35 +66,80 @@ def _check_bytes(name: str, content: bytes, max_bytes: int) -> str:
     return "xlsx" if content.startswith(b"PK\x03\x04") else ("xls" if ext == ".xls" else "csv")
 
 
+def _decode(content: bytes) -> str:
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return content.decode("latin-1")
+
+
+def read_grid(kind: str, content: bytes) -> pd.DataFrame:
+    """Every line of the sheet as a row of strings (no header assumed), so row numbers match the file."""
+    if kind == "csv":
+        text = _decode(content)
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
+        except csv.Error:
+            dialect = csv.excel
+        rows = list(csv.reader(io.StringIO(text), dialect))
+        width = max((len(r) for r in rows), default=0)
+        return pd.DataFrame([r + [""] * (width - len(r)) for r in rows], dtype=str)
+    engine = "openpyxl" if kind == "xlsx" else "xlrd"
+    return pd.read_excel(io.BytesIO(content), header=None, dtype=str, keep_default_na=False, engine=engine)
+
+
+def header_labels(values: list) -> list[str]:
+    """Header cells as column labels; blank/repeated cells get unique placeholders."""
+    labels: list[str] = []
+    for position, value in enumerate(values):
+        label = str(value).strip()
+        if not label or label in labels:
+            label = f"column_{position + 1}"
+        labels.append(label)
+    return labels
+
+
 def _read(kind: str, content: bytes) -> pd.DataFrame:
     try:
-        if kind == "csv":
-            for encoding in ("utf-8-sig", "cp1252", "latin-1"):
-                try:
-                    return pd.read_csv(io.StringIO(content.decode(encoding)), dtype=str, keep_default_na=False)
-                except UnicodeDecodeError:
-                    continue
-        return pd.read_excel(io.BytesIO(content), dtype=str, keep_default_na=False, engine="openpyxl" if kind == "xlsx" else "xlrd")
+        return read_grid(kind, content)
     except Exception as exc:
         raise ImportError_(f"Could not read the file: {type(exc).__name__}") from exc
 
 
-def parse_import(filename: str, content: bytes, max_bytes: int) -> ImportResult:
-    frame = _read(_check_bytes(filename, content, max_bytes), content)
+def _map_columns(headers) -> dict:
     columns = {"link": None, "creator": None, "platform": None, "owner": None}
-    for column in frame.columns:
+    for column in headers:
         key = _key(column)
         for slot, aliases in (("link", _LINK), ("creator", _CREATOR), ("platform", _PLATFORM), ("owner", _OWNER)):
             if columns[slot] is None and key in aliases:
                 columns[slot] = column
                 break
+    return columns
+
+
+def parse_import(filename: str, content: bytes, max_bytes: int) -> ImportResult:
+    grid = _read(_check_bytes(filename, content, max_bytes), content)
+    frame, columns, header_row = grid, {"link": None}, 1
+    # The header is the first row (within the first rows) with a video-link column; title rows above it are skipped.
+    for index in range(min(HEADER_SEARCH_ROWS, len(grid))):
+        values = header_labels(grid.iloc[index].tolist())
+        candidate = _map_columns(values)
+        if candidate["link"] is not None:
+            frame = grid.iloc[index + 1 :].copy()
+            frame.columns = values
+            frame = frame.reset_index(drop=True)
+            columns, header_row = candidate, index + 1
+            break
     if columns["link"] is None:
-        found = ", ".join(str(c) for c in frame.columns[:10]) or "none"
+        first = next((r for r in grid.head(HEADER_SEARCH_ROWS).itertuples(index=False) if any(str(v).strip() for v in r)), [])
+        found = ", ".join(str(v) for v in first if str(v).strip()) or "none"
         raise ImportError_(f"Missing required column 'Video Link'. Found columns: {found}")
 
     result = ImportResult()
     seen: set[tuple[str, str]] = set()
-    for index, record in enumerate(frame.to_dict("records"), start=2):
+    for index, record in enumerate(frame.to_dict("records"), start=header_row + 1):
         link = clean_text(record.get(columns["link"], ""))[:2048]
         creator = clean_text(record.get(columns["creator"], "")) if columns["creator"] else ""
         platform_hint = clean_text(record.get(columns["platform"], "")).lower() if columns["platform"] else ""
@@ -107,7 +156,7 @@ def parse_import(filename: str, content: bytes, max_bytes: int) -> ImportResult:
             if parsed.platform == "instagram"
             else None
         )
-        row = ImportRow(index, creator[:300] or None, parsed, owner)
+        row = ImportRow(index, creator[:300] or None, parsed, owner, raw_link=link, raw_platform=platform_hint or None)
         if not parsed.ok:
             row.status, row.message = "invalid", parsed.error
         else:

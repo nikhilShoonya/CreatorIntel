@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from app.config.settings import Settings, get_settings
+from app.services.api_usage import record_youtube_call, record_youtube_quota_exceeded
 from app.services.http_client import HttpRequestError, request_json
 from app.utils.logging import log_event
 from app.utils.url_parser import ParsedLink
@@ -115,11 +116,14 @@ class YouTubeVideoClient:
                 return await request_json(
                     "GET", f"{YOUTUBE_API}/{resource}", service="YouTube API", params=params,
                     headers={"X-Goog-Api-Key": keys[index]}, client=self.client,
+                    on_attempt=lambda key=keys[index]: record_youtube_call(key),
                 )
             except HttpRequestError as exc:
                 error = (exc.payload or {}).get("error", {}) if isinstance(exc.payload, dict) else {}
                 reasons = {e.get("reason") for e in error.get("errors", []) if isinstance(e, dict)}
                 quota = bool(reasons & {"quotaExceeded", "dailyLimitExceeded"})
+                if quota:
+                    record_youtube_quota_exceeded(keys[index])
                 bad_key = exc.status_code in (400, 401, 403) and not quota and (
                     "API key" in str(error.get("message", "")) or reasons & {"keyInvalid", "accessNotConfigured"}
                 )

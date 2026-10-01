@@ -5,6 +5,7 @@ playlistItems.list -> videos.list (batched). search.list is never used.
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +13,7 @@ import httpx
 
 from app.config.settings import Settings, get_settings
 from app.schemas.platform import ChannelProfile, CollectionError, ContentItem
+from app.services.api_usage import record_youtube_call, record_youtube_quota_exceeded
 from app.services.http_client import HttpRequestError, request_json
 from app.utils.logging import log_event
 from app.utils.url_parser import ParsedLink
@@ -47,6 +49,18 @@ def _to_int(value: Any) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+_ISO_DURATION = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
+
+
+def _duration_seconds(value: Any) -> int | None:
+    """ISO 8601 duration from the API ("PT1H2M3S") -> seconds."""
+    match = _ISO_DURATION.match(str(value or ""))
+    if not match or not any(match.groups()):
+        return None
+    days, hours, minutes, seconds = (int(g or 0) for g in match.groups())
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
 def _to_datetime(value: Any) -> datetime | None:
@@ -85,10 +99,13 @@ class YouTubeCollector:
                     headers={"X-Goog-Api-Key": keys[index], "Accept": "application/json"},
                     should_retry=_should_retry,
                     client=self.client,
+                    on_attempt=lambda key=keys[index]: record_youtube_call(key),
                 )
             except HttpRequestError as exc:
                 reasons = _error_reasons(exc.payload)
                 quota = bool(reasons & _QUOTA_REASONS)
+                if quota:
+                    record_youtube_quota_exceeded(keys[index])
                 key_error = not quota and self._is_key_error(exc, reasons) and not (reasons & _RATE_LIMIT_REASONS)
                 if (quota or key_error) and index + 1 < len(keys):
                     if self._key_index == index:
@@ -192,6 +209,7 @@ class YouTubeCollector:
                     comments=_to_int(stats.get("commentCount")),
                     tags=[str(t) for t in (snippet.get("tags") or [])][:20],
                     is_live_or_upcoming=snippet.get("liveBroadcastContent") in ("live", "upcoming"),
+                    duration_seconds=_duration_seconds((item.get("contentDetails") or {}).get("duration")),
                 )
             )
         videos.sort(key=lambda v: v.published_at or _EPOCH, reverse=True)

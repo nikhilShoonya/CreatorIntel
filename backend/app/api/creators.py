@@ -3,6 +3,7 @@ import math
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
 from app.api.deps import creator_filters, get_orchestrator
@@ -144,6 +145,8 @@ def _queue_creator(db: Session, creator_id: int, reanalyze: bool) -> None:
 
 # ------------------------------------------------------------------------ CRUD
 def _to_http(exc: Exception) -> HTTPException:
+    if isinstance(exc, IntegrityError):  # same channel saved concurrently by someone else
+        return HTTPException(status_code=409, detail="This channel already exists")
     if isinstance(exc, (CreatorConflict, CreatorBusy)):
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, LookupError):
@@ -151,7 +154,7 @@ def _to_http(exc: Exception) -> HTTPException:
     return HTTPException(status_code=422, detail=str(exc))
 
 
-_CRUD_ERRORS = (CreatorConflict, CreatorBusy, InvalidLink, ValueError, LookupError)
+_CRUD_ERRORS = (CreatorConflict, CreatorBusy, InvalidLink, ValueError, LookupError, IntegrityError)
 
 
 def _detail(db: Session, creator_id: int) -> CreatorDetailOut:

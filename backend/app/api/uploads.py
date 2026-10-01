@@ -1,21 +1,28 @@
 import logging
 from collections import Counter
+from datetime import timedelta
+from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import select, update
+from fastapi.responses import Response
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.agents.ingestion_agent import FileIngestionAgent, IngestionError
 from app.api.deps import get_orchestrator
 from app.config.settings import get_settings
 from app.models.db import get_db, get_read_db
-from app.models.entities import Creator, CreatorStatus, Upload, UploadItem, UploadStatus
-from app.schemas.api import DeleteResult, UploadDetailOut, UploadItemOut, UploadOut
+from app.models.entities import Creator, CreatorStatus, Upload, UploadItem, UploadRow, UploadStatus
+from app.schemas.api import DeleteResult, UploadDetailOut, UploadItemOut, UploadOut, UploadRowOut, UploadRowsOut
 from app.services.creator_service import CreatorBusy, delete_upload
 from app.services.orchestrator import EnrichmentOrchestrator
+from app.utils.spreadsheet import table_bytes
 from app.services.upload_service import create_upload, store_upload_file, upload_status_counts
 from app.utils.logging import log_event
+from app.utils.time import as_utc
 
 logger = logging.getLogger("creatorintel.api.uploads")
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
@@ -38,24 +45,41 @@ def _summary(upload: Upload, counts: Counter) -> dict:
         "error_message": upload.error_message,
         "created_at": upload.created_at,
         "completed_at": upload.completed_at,
+        **_file_status(upload),
     }
 
 
+def _file_status(upload: Upload) -> dict:
+    retention = get_settings().upload_file_retention_days
+    delete_after = None
+    if upload.file_deleted_at is None and upload.stored_filename and retention > 0 and upload.created_at:
+        delete_after = as_utc(upload.created_at) + timedelta(days=retention)
+    return {"file_deleted_at": upload.file_deleted_at, "file_delete_after": delete_after}
+
+
+_ITEM_COLUMNS = (
+    UploadItem.creator_id, UploadItem.position, UploadItem.source_row, UploadItem.from_cache,
+    Creator.channel_name, Creator.platform, Creator.status, Creator.error_message,
+)
+
+
 def load_upload_detail(db: Session, upload_id: str) -> UploadDetailOut:
-    """Upload + its items in two queries (no per-row lookups)."""
-    upload = db.get(Upload, upload_id)
-    if upload is None:
-        raise HTTPException(status_code=404, detail="Upload not found")
+    """Upload + its items in ONE query (each database round trip is slow on a remote database)."""
     rows = db.execute(
-        select(
-            UploadItem.creator_id, UploadItem.position, UploadItem.source_row, UploadItem.from_cache,
-            Creator.channel_name, Creator.platform, Creator.status, Creator.error_message,
-        )
-        .join(Creator, Creator.id == UploadItem.creator_id)
-        .where(UploadItem.upload_id == upload_id)
+        select(Upload, *_ITEM_COLUMNS)
+        .outerjoin(UploadItem, UploadItem.upload_id == Upload.id)
+        .outerjoin(Creator, Creator.id == UploadItem.creator_id)
+        .where(Upload.id == upload_id)
         .order_by(UploadItem.position)
     ).all()
-    items = [UploadItemOut(**row._mapping) for row in rows]
+    if not rows:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    upload = rows[0][0]
+    items = [
+        UploadItemOut(**{key: value for key, value in row._mapping.items() if key != "Upload"})
+        for row in rows
+        if row.creator_id is not None
+    ]
     counts = Counter(item.status for item in items)
     return UploadDetailOut(**_summary(upload, counts), items=items)
 
@@ -78,9 +102,17 @@ async def upload_file(
 
     def persist() -> str:
         stored = store_upload_file(settings, safe_name, content)
-        upload = create_upload(db, settings, safe_name, stored, ingestion)
-        db.commit()
-        return upload.id
+        for attempt in (1, 2):
+            try:
+                upload = create_upload(db, settings, safe_name, stored, ingestion)
+                db.commit()
+                return upload.id
+            except IntegrityError:
+                # Another upload created one of these creators at the same moment: retry once, it now exists.
+                db.rollback()
+                if attempt == 2:
+                    raise HTTPException(status_code=409, detail="Another upload is adding the same creators right now. Please try again.")
+        raise AssertionError("unreachable")
 
     upload_id = await run_in_threadpool(persist)
     orchestrator.start_upload(upload_id)
@@ -89,9 +121,26 @@ async def upload_file(
 
 @router.get("", response_model=list[UploadOut])
 def list_uploads(limit: int = Query(default=50, ge=1, le=200), db: Session = Depends(get_read_db)):
-    uploads = db.scalars(select(Upload).order_by(Upload.created_at.desc()).limit(limit)).all()
-    counts = upload_status_counts(db, [upload.id for upload in uploads])
-    return [UploadOut(**_summary(upload, counts.get(upload.id, Counter()))) for upload in uploads]
+    # Uploads + per-status creator counts in ONE query.
+    counts = (
+        select(UploadItem.upload_id, Creator.status, func.count().label("n"))
+        .join(Creator, Creator.id == UploadItem.creator_id)
+        .group_by(UploadItem.upload_id, Creator.status)
+        .subquery()
+    )
+    latest = select(Upload.id).order_by(Upload.created_at.desc()).limit(limit).scalar_subquery()
+    rows = db.execute(
+        select(Upload, counts.c.status, counts.c.n)
+        .outerjoin(counts, counts.c.upload_id == Upload.id)
+        .where(Upload.id.in_(latest))
+        .order_by(Upload.created_at.desc())
+    ).all()
+    uploads: dict[str, tuple[Upload, Counter]] = {}
+    for upload, status, n in rows:
+        entry = uploads.setdefault(upload.id, (upload, Counter()))
+        if status is not None:
+            entry[1][status] = n
+    return [UploadOut(**_summary(upload, status_counts)) for upload, status_counts in uploads.values()]
 
 
 @router.post("/{upload_id}/retry-failed", response_model=UploadDetailOut, status_code=202)
@@ -129,6 +178,41 @@ def _queue_failed(db: Session, upload_id: str) -> None:
     upload.error_message = None
     db.commit()
     log_event(logger, logging.INFO, "upload_retry_failed", upload_id=upload_id, queued=queued)
+
+
+_ROW_LABELS = {"queued": "Analysed", "cached": "Reused recent data", "duplicate": "Duplicate", "invalid": "Invalid link"}
+
+
+def _upload_rows(db: Session, upload_id: str) -> tuple[Upload, list[UploadRow]]:
+    upload = db.get(Upload, upload_id)
+    if upload is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    rows = db.scalars(select(UploadRow).where(UploadRow.upload_id == upload_id).order_by(UploadRow.row_number)).all()
+    return upload, list(rows)
+
+
+@router.get("/{upload_id}/rows", response_model=UploadRowsOut)
+def upload_rows(upload_id: str, db: Session = Depends(get_read_db)):
+    """The uploaded file's rows as stored in the database (available even after the file is deleted)."""
+    upload, rows = _upload_rows(db, upload_id)
+    counts = upload_status_counts(db, [upload_id]).get(upload_id, Counter())
+    return UploadRowsOut(upload=UploadOut(**_summary(upload, counts)), rows=[UploadRowOut.model_validate(r) for r in rows])
+
+
+@router.get("/{upload_id}/rows/export")
+async def export_upload_rows(
+    upload_id: str, format: Literal["csv", "excel"] = "excel", db: Session = Depends(get_read_db)
+):
+    upload, rows = await run_in_threadpool(_upload_rows, db, upload_id)
+    table = [[r.row_number, r.channel_name, r.channel_link, _ROW_LABELS.get(r.outcome, r.outcome), r.message] for r in rows]
+    columns = ["Row", "Channel Name", "Channel Link", "Result", "Notes"]
+    kind = "csv" if format == "csv" else "excel"
+    content = await run_in_threadpool(table_bytes, columns, table, kind, "Uploaded rows")
+    stem = Path(upload.filename).stem[:80] or "upload"
+    ext, media = ("csv", "text/csv; charset=utf-8") if kind == "csv" else (
+        "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    return Response(content=content, media_type=media, headers={"Content-Disposition": f'attachment; filename="{stem}_rows.{ext}"'})
 
 
 @router.get("/{upload_id}", response_model=UploadDetailOut)

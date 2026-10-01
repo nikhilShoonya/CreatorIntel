@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from app.schemas.platform import ChannelProfile, ContentItem
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+SHORT_FORM_MAX_SECONDS = 180  # YouTube Shorts can be up to 3 minutes
 
 
 @dataclass
@@ -29,6 +30,11 @@ class MetricsResult:
     average_views: float | None = None
     average_views_sample_count: int = 0
     median_views: float | None = None
+    # YouTube: same average split by format, so Shorts don't distort long-form numbers
+    average_views_long: float | None = None
+    average_views_long_count: int = 0
+    average_views_short: float | None = None
+    average_views_short_count: int = 0
     top_video: TopVideo | None = None
     engagement_rate: float | None = None
     engagement_rate_basis: str | None = None  # "views" | "followers"
@@ -74,6 +80,9 @@ class MetricsProcessor:
         else:
             result.notes.append(f"Average views unavailable: no {unit} with view counts")
 
+        if profile.platform == "youtube":
+            self._format_split(with_views, result)
+
         # Top performing video among recent items that have real URLs and views
         candidates = [v for v in with_views if v.url and v.views]
         if candidates:
@@ -83,6 +92,19 @@ class MetricsProcessor:
 
         self._engagement(profile, with_views, result, unit)
         return result
+
+    def _format_split(self, with_views: list[ContentItem], result: MetricsResult) -> None:
+        timed = [v for v in with_views if v.duration_seconds is not None]
+        for kind, items in (
+            ("long", [v for v in timed if v.duration_seconds > SHORT_FORM_MAX_SECONDS]),
+            ("short", [v for v in timed if v.duration_seconds <= SHORT_FORM_MAX_SECONDS]),
+        ):
+            sample = [v.views for v in items[: self.sample_size] if v.views is not None]
+            if sample:
+                setattr(result, f"average_views_{kind}", round(sum(sample) / len(sample), 2))
+                setattr(result, f"average_views_{kind}_count", len(sample))
+                label = "long_form_videos_over_3_min" if kind == "long" else "short_form_videos_up_to_3_min"
+                result.provenance[f"average_views_{kind}"] = f"calculated_from_{len(sample)}_{label}"
 
     def _engagement(self, profile: ChannelProfile, with_views: list[ContentItem], result: MetricsResult, unit: str) -> None:
         by_views = [

@@ -82,9 +82,32 @@ export interface VpImportRow {
   message: string | null;
 }
 
+export interface VpUpload {
+  id: string;
+  filename: string;
+  total_rows: number;
+  added: number;
+  already_tracked: number;
+  duplicates: number;
+  invalid: number;
+  created_at: string;
+  file_deleted_at: string | null;
+  file_delete_after: string | null;
+}
+
 export interface VpUploadResult {
-  upload: { id: string; filename: string; total_rows: number; added: number; already_tracked: number; duplicates: number; invalid: number; created_at: string };
+  upload: VpUpload;
   rows: VpImportRow[];
+}
+
+export interface VpUploadRow {
+  row_number: number;
+  creator_name: string | null;
+  platform: string | null;
+  video_link: string | null;
+  username: string | null;
+  status: "added" | "already_tracked" | "duplicate" | "invalid";
+  message: string | null;
 }
 
 export interface SentimentCounts {

@@ -14,7 +14,7 @@ from collections.abc import Coroutine
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 
 from app.agents.content_analysis_agent import ContentAnalyzer, build_content_sample, resolve_display_values
 from app.agents.instagram_agent import InstagramCollector
@@ -35,7 +35,8 @@ logger = logging.getLogger("creatorintel.orchestrator")
 # Fields rewritten on every full enrichment (so stale values are never mixed with new ones)
 _ENRICHED_FIELDS = (
     "platform_id", "platform_display_name", "account_access", "followers_count", "subscriber_count",
-    "average_views", "average_views_sample_count", "median_views", "top_video_title", "top_video_url",
+    "average_views", "average_views_sample_count", "median_views", "average_views_long", "average_views_long_count",
+    "average_views_short", "average_views_short_count", "top_video_title", "top_video_url",
     "top_video_views", "engagement_rate", "engagement_rate_basis", "engagement_sample_count",
 )
 _AI_FIELDS = (
@@ -50,6 +51,14 @@ def recompute_upload_counts(db, upload: Upload) -> None:
     upload.partial_rows = counts[CreatorStatus.PARTIAL]
     upload.successful_rows = counts[CreatorStatus.COMPLETED] + upload.partial_rows
     upload.failed_rows = counts[CreatorStatus.FAILED]
+
+
+def _merge_creator_into(db, duplicate_id: int, keep_id: int) -> None:
+    """Move a duplicate creator's upload memberships to the kept creator, then delete the duplicate."""
+    already_in = select(UploadItem.upload_id).where(UploadItem.creator_id == keep_id)
+    db.execute(delete(UploadItem).where(UploadItem.creator_id == duplicate_id, UploadItem.upload_id.in_(already_in)))
+    db.execute(update(UploadItem).where(UploadItem.creator_id == duplicate_id).values(creator_id=keep_id))
+    db.execute(delete(Creator).where(Creator.id == duplicate_id).execution_options(synchronize_session=False))
 
 
 def _status_for(values: dict, ai_ok: bool) -> str:
@@ -76,6 +85,7 @@ class EnrichmentOrchestrator:
         self.validator = ResultValidator()
         self._semaphore = asyncio.Semaphore(self.settings.max_concurrent_creators)
         self._locks: dict[int, asyncio.Lock] = {}
+        self._identity_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
 
     # ---------------------------------------------------------------- scheduling
@@ -181,6 +191,9 @@ class EnrichmentOrchestrator:
     def _lock_for(self, creator_id: int) -> asyncio.Lock:
         return self._locks.setdefault(creator_id, asyncio.Lock())
 
+    def _identity_lock(self, platform: str, platform_id: str | None) -> asyncio.Lock:
+        return self._identity_locks.setdefault(f"{platform}:{platform_id}", asyncio.Lock())
+
     def _collector_for(self, platform: str):
         return self.youtube if platform == "youtube" else self.instagram
 
@@ -261,24 +274,53 @@ class EnrichmentOrchestrator:
         final = outcome.values
         status = _status_for(final, analysis.result is not None)
 
-        def save() -> None:
+        def save() -> int | None:
+            """Store results. Returns the ID this creator was merged into, if it was a duplicate channel."""
             with session_scope() as db:
                 creator = db.get(Creator, creator_id)
                 if creator is None:
-                    return
+                    return None
+                target = creator
+                merged_into = None
+                # Different links (@handle, /channel/UC..., a video link) can point to the same channel;
+                # the platform ID returned by the API is the real identity.
+                if profile.platform_id:
+                    existing = db.scalar(
+                        select(Creator)
+                        .where(
+                            Creator.platform == creator.platform,
+                            Creator.platform_id == profile.platform_id,
+                            Creator.id != creator_id,
+                        )
+                        .order_by(Creator.id)
+                        .limit(1)
+                    )
+                    if existing is not None:
+                        # Keep the older record (created first) so names/history stay stable.
+                        if existing.id < creator_id:
+                            _merge_creator_into(db, creator_id, existing.id)
+                            target, merged_into = existing, existing.id
+                        else:
+                            _merge_creator_into(db, existing.id, creator_id)
                 for key in (*_ENRICHED_FIELDS, *_AI_FIELDS):
-                    setattr(creator, key, final.get(key))
-                if profile.resolved_channel_url:
+                    setattr(target, key, final.get(key))
+                if profile.resolved_channel_url and target is creator:
                     creator.channel_url = profile.resolved_channel_url
-                creator.provenance = provenance
-                creator.content_sample = sample
-                creator.issues = issues or None
-                creator.status = status
-                creator.error_message = None if status == CreatorStatus.COMPLETED else "; ".join(issues[:3]) or None
-                creator.data_fetched_at = utcnow()
-                creator.analyzed_at = utcnow() if analysis.result is not None else None
+                target.provenance = provenance
+                target.content_sample = sample
+                target.issues = issues or None
+                target.status = status
+                target.error_message = None if status == CreatorStatus.COMPLETED else "; ".join(issues[:3]) or None
+                target.data_fetched_at = utcnow()
+                target.analyzed_at = utcnow() if analysis.result is not None else None
+                return merged_into
 
-        await asyncio.to_thread(save)
+        # Saves for the same channel run one after another, so the second one always sees the first
+        # (otherwise two links of one channel finishing at the same moment could both be kept).
+        async with self._identity_lock(platform, profile.platform_id):
+            merged_into = await asyncio.to_thread(save)
+        if merged_into is not None:
+            log_event(logger, logging.INFO, "creator_merged_duplicate_channel", **ctx, merged_into=merged_into)
         log_event(logger, logging.INFO, "creator_saved", **ctx, status=status, issues=len(issues))
 
     def _assemble(self, channel_url: str, profile: ChannelProfile, metrics: MetricsResult) -> dict:
@@ -293,6 +335,10 @@ class EnrichmentOrchestrator:
             "average_views": metrics.average_views,
             "average_views_sample_count": metrics.average_views_sample_count,
             "median_views": metrics.median_views,
+            "average_views_long": metrics.average_views_long,
+            "average_views_long_count": metrics.average_views_long_count or None,
+            "average_views_short": metrics.average_views_short,
+            "average_views_short_count": metrics.average_views_short_count or None,
             "top_video_title": top.title if top else None,
             "top_video_url": top.url if top else None,
             "top_video_views": top.views if top else None,
