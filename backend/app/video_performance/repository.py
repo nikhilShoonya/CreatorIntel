@@ -346,6 +346,12 @@ def save_creator_result(creator_id: int, *, error: PlatformError | None = None, 
         creator = db.get(VtCreator, creator_id)
         if creator is None:
             return
+        # ``save_creator_channel`` can reject this record after resolving its
+        # real platform identity (for example, the same YouTube channel added
+        # once by handle and once by channel ID).  Preserve that terminal
+        # failure instead of turning it into a misleading paused success.
+        if error is None and not creator.enabled and creator.status == CreatorTrackingStatus.FAILED:
+            return
         creator.last_discovery_at = utcnow()
         if error is None:
             creator.status = CreatorTrackingStatus.ACTIVE if creator.enabled else CreatorTrackingStatus.PAUSED
@@ -504,11 +510,13 @@ def update_video(
 def set_paused(video_ids: list[int], paused: bool) -> list[int]:
     with session_scope() as db:
         if paused:
-            db.execute(
-                update(VtVideo).where(VtVideo.id.in_(video_ids))
-                .values(status=VideoStatus.PAUSED, status_reason="Tracking stopped by user")
-            )
-            return video_ids
+            rows = list(db.scalars(select(VtVideo.id).where(VtVideo.id.in_(video_ids))))
+            if rows:
+                db.execute(
+                    update(VtVideo).where(VtVideo.id.in_(rows))
+                    .values(status=VideoStatus.PAUSED, status_reason="Tracking stopped by user")
+                )
+            return rows
         rows = list(
             db.scalars(
                 select(VtVideo.id).where(

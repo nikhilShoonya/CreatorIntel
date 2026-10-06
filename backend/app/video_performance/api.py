@@ -241,6 +241,10 @@ async def update_video(video_id: int, body: VideoUpdateIn, tracker: VideoTracker
     owner = None
     if body.instagram_username is not None:
         owner = _username(body.instagram_username) or ""
+    elif parsed is not None and parsed.platform == "instagram":
+        # Match the create endpoint: when the permalink does not include the
+        # owner, a creator name that is an Instagram handle is still usable.
+        owner = parsed.owner_username or parse_instagram_handle(body.creator_name)
     try:
         reprocess = await run_in_threadpool(
             lambda: repo.update_video(

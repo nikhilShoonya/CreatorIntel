@@ -279,6 +279,13 @@ class VideoTracker:
         except PlatformError as exc:
             await asyncio.to_thread(repo.save_creator_result, creator_id, error=exc)
             log_event(logger, logging.WARNING, "vt_creator_failed", creator_id=creator_id, platform=row["platform"], reason=exc.message)
+        except Exception:
+            # A background task must always leave a visible terminal state.
+            # Without this, an unexpected DB/client error leaves the creator
+            # stuck at Pending indefinitely with no way to understand why.
+            error = PlatformError(PlatformError.API, "Unexpected error while validating this creator")
+            await asyncio.to_thread(repo.save_creator_result, creator_id, error=error)
+            logger.exception("vt_creator_setup_crashed creator_id=%s", creator_id)
 
     async def discover(
         self, creator_ids: list[int], on_done: Callable[[], None] | None = None
@@ -315,6 +322,8 @@ class VideoTracker:
                     log_event(logger, logging.WARNING, "vt_discovery_failed", **ctx, code=exc.code, reason=exc.message)
                 except Exception:
                     failed += 1
+                    error = PlatformError(PlatformError.API, "Unexpected error while discovering videos")
+                    await asyncio.to_thread(repo.save_creator_result, creator_id, error=error)
                     logger.exception("vt_discovery_crashed creator_id=%s", creator_id)
             finally:
                 if on_done:

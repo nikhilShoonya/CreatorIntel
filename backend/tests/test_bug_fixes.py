@@ -1,7 +1,9 @@
 """Regression tests for the bug-fix round (duplicates, cache, header rows, formats, races, job locks, migrations)."""
 
+import asyncio
 import io
 import time
+from uuid import uuid4
 
 import pandas as pd
 import pytest
@@ -17,12 +19,16 @@ from app.agents.metrics_agent import MetricsProcessor
 from app.agents.youtube_agent import YouTubeCollector
 from app.config.settings import get_settings
 from app.main import app
-from app.models.db import Base, engine
+from app.models.db import Base, engine, session_scope
 from app.schemas.platform import ChannelProfile, ContentItem
 from app.services.llm_client import LLMClient
 from app.services.orchestrator import EnrichmentOrchestrator
 from app.video_performance import repository as vt_repo
+from app.video_performance import queries as vt_queries
 from app.video_performance.ingest import parse_import
+from app.video_performance.models import CreatorTrackingStatus, VideoStatus, VtCreator, VtVideo
+from app.video_performance.platforms import ChannelInfo
+from app.video_performance.tracker import VideoTracker
 from app.video_performance.urls import parse_video_link
 from tests.fakes import instagram_handler, llm_handler, mock_client, youtube_handler
 
@@ -147,3 +153,93 @@ def test_models_and_migrations_are_in_sync(client):
     with engine.connect() as connection:
         diff = compare_metadata(MigrationContext.configure(connection), Base.metadata)
     assert diff == [], f"Model changes without a migration: {diff}"
+
+
+def test_video_creator_duplicate_identity_keeps_its_failure_reason(client):
+    """Resolution-time identity duplicates must not be presented as a paused success."""
+    suffix = uuid4().hex
+    with session_scope() as db:
+        original = VtCreator(
+            creator_name="Original", platform="youtube", channel_url="https://youtube.com/@original",
+            normalized_identifier=f"original-{suffix}", platform_channel_id=f"channel-{suffix}",
+            status=CreatorTrackingStatus.ACTIVE,
+        )
+        duplicate = VtCreator(
+            creator_name="Duplicate", platform="youtube", channel_url="https://youtube.com/@duplicate",
+            normalized_identifier=f"duplicate-{suffix}", status=CreatorTrackingStatus.PENDING,
+        )
+        db.add_all((original, duplicate))
+        db.flush()
+        duplicate_id = duplicate.id
+
+    vt_repo.save_creator_channel(duplicate_id, ChannelInfo(f"channel-{suffix}", "Original"))
+    vt_repo.save_creator_result(duplicate_id)
+    duplicate = next(c for c in vt_queries.creators() if c.id == duplicate_id)
+    assert duplicate.status == CreatorTrackingStatus.FAILED
+    assert duplicate.enabled is False
+    assert duplicate.status_reason == "The same channel is already tracked (added with a different link)"
+    vt_repo.delete_creator(duplicate_id, False)
+    vt_repo.delete_creator(original.id, False)
+
+
+def test_unexpected_creator_setup_error_marks_creator_failed(client, monkeypatch):
+    suffix = uuid4().hex
+    with session_scope() as db:
+        creator = VtCreator(
+            creator_name="Broken", platform="youtube", channel_url="https://youtube.com/@broken",
+            normalized_identifier=f"broken-{suffix}", status=CreatorTrackingStatus.PENDING,
+        )
+        db.add(creator)
+        db.flush()
+        creator_id = creator.id
+
+    tracker = VideoTracker(get_settings())
+
+    async def fail_resolution(_row):
+        raise RuntimeError("database client failure")
+
+    monkeypatch.setattr(tracker, "_resolve_creator", fail_resolution)
+    asyncio.run(tracker.setup_creator(creator_id, 0))
+    creator = next(c for c in vt_queries.creators() if c.id == creator_id)
+    assert creator.status == CreatorTrackingStatus.FAILED
+    assert creator.status_reason == "Unexpected error while validating this creator"
+    vt_repo.delete_creator(creator_id, False)
+
+
+def test_editing_to_instagram_uses_creator_handle_as_owner(client, monkeypatch):
+    suffix = uuid4().hex[:8]
+    with session_scope() as db:
+        video = VtVideo(
+            platform="youtube", video_identifier=f"a{suffix[:10]}".ljust(11, "a"),
+            video_url="https://www.youtube.com/watch?v=aaaaaaaaaaa", status=VideoStatus.TRACKING,
+        )
+        db.add(video)
+        db.flush()
+        video_id = video.id
+
+    class Tracker:
+        def start_processing(self, _ids):
+            pass
+
+    monkeypatch.setattr(app.state, "video_tracker", Tracker())
+    response = client.put(
+        f"/api/video-performance/videos/{video_id}",
+        json={"video_url": "https://www.instagram.com/reel/OwnerCode1/", "creator_name": "@owner_handle"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["owner_username"] == "owner_handle"
+    vt_repo.delete_videos([video_id])
+
+
+def test_bulk_pause_counts_only_existing_videos(client):
+    with session_scope() as db:
+        video = VtVideo(
+            platform="youtube", video_identifier=f"z{uuid4().hex[:10]}",
+            video_url="https://www.youtube.com/watch?v=bbbbbbbbbbb", status=VideoStatus.TRACKING,
+        )
+        db.add(video)
+        db.flush()
+        video_id = video.id
+
+    assert vt_repo.set_paused([video_id, 999_999_999], True) == [video_id]
+    vt_repo.delete_videos([video_id])
