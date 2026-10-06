@@ -31,14 +31,14 @@ import { PlatformIcon } from "@/components/ui/PlatformIcon";
 import { Pagination } from "@/components/creators/Pagination";
 import { useApi } from "@/hooks/useApi";
 import { useDebounce } from "@/hooks/useDebounce";
-import { formatCompact, formatPercent, platformLabel, safeHref } from "@/lib/format";
+import { formatNumber, formatPercent, platformLabel, safeHref } from "@/lib/format";
 import { vpApi } from "@/lib/vpApi";
 import type { VpFilters, VpSortKey, VpStatus, VpVideo, VpVideoList } from "@/types/videoPerformance";
 import { VpSentimentBadge, VpStatusBadge } from "./badges";
 import { EditVideoDialog, HistoryDialog } from "./dialogs";
 import { formatChecked, formatGrowth, formatSigned, growthTone } from "./format";
 
-const STATUSES: VpStatus[] = ["Tracking", "Partial", "Pending", "Processing", "Paused", "Completed", "Failed", "Unsupported"];
+const STATUSES: VpStatus[] = ["Tracking", "Partial", "Pending", "Processing", "Paused", "Completed", "Failed", "Unsupported", "Video Down"];
 const BUSY: VpStatus[] = ["Pending", "Processing"];
 
 const SORT_KEYS: VpSortKey[] = ["current_views", "views_gained", "growth_pct", "engagement_rate", "last_checked_at", "created_at"];
@@ -232,7 +232,7 @@ export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Pr
           <table className="w-full min-w-[1500px] border-separate border-spacing-0 text-sm">
             <thead className="sticky top-0 z-20 text-left text-xs font-semibold text-slate-600">
               <tr>
-                <Th className="sticky left-0 z-30 w-10 min-w-10 max-w-10 px-0 text-center">
+                <Th className="sticky left-0 z-30 w-10 min-w-10 max-w-10 !px-0 text-center">
                   <input
                     type="checkbox"
                     aria-label="Select all rows on this page"
@@ -241,15 +241,15 @@ export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Pr
                     className="h-4 w-4 cursor-pointer accent-[var(--color-accent)]"
                   />
                 </Th>
-                <Th className="sticky left-10 z-30 w-12 min-w-12 max-w-12 px-0 text-center">#</Th>
+                <Th className="sticky left-10 z-30 w-12 min-w-12 max-w-12 !px-0 text-center">#</Th>
                 <Th className="sticky left-[88px] z-30 min-w-[260px] shadow-[inset_-1px_0_0_var(--color-line)]">Video</Th>
                 <Th>Platform</Th>
                 <Th>Creator</Th>
-                <SortTh label="Current Views" k="current_views" sort={sort} onSort={toggleSort} />
-                <Th className="text-right">Previous Views</Th>
-                <SortTh label="Views Gained" k="views_gained" sort={sort} onSort={toggleSort} />
-                <SortTh label="Growth %" k="growth_pct" sort={sort} onSort={toggleSort} />
-                <SortTh label="Engagement Rate" k="engagement_rate" sort={sort} onSort={toggleSort} />
+                <SortTh label="Current Views" k="current_views" sort={sort} onSort={toggleSort} align="center" />
+                <Th className="text-center">Previous Views</Th>
+                <SortTh label="Views Gained" k="views_gained" sort={sort} onSort={toggleSort} align="center" />
+                <SortTh label="Growth %" k="growth_pct" sort={sort} onSort={toggleSort} align="center" />
+                <SortTh label="Engagement Rate" k="engagement_rate" sort={sort} onSort={toggleSort} align="center" />
                 <Th>Sentiment</Th>
                 <SortTh label="Last Checked" k="last_checked_at" sort={sort} onSort={toggleSort} align="left" />
                 <Th>Tracking Status</Th>
@@ -359,13 +359,14 @@ function SortTh({
   k: VpSortKey;
   sort: { key: VpSortKey; dir: "asc" | "desc" } | null;
   onSort: (k: VpSortKey) => void;
-  align?: "left" | "right";
+  align?: "left" | "center" | "right";
 }) {
   const active = sort?.key === k;
   const Icon = !active ? ArrowUpDown : sort.dir === "desc" ? ArrowDown : ArrowUp;
+  const alignClass = align === "right" ? "text-right" : align === "center" ? "text-center" : "";
   return (
     <th
-      className={`whitespace-nowrap border-b border-line bg-slate-50 px-4 py-3 ${align === "right" ? "text-right" : ""}`}
+      className={`whitespace-nowrap border-b border-line bg-slate-50 px-4 py-3 ${alignClass}`}
       aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
     >
       <button type="button" onClick={() => onSort(k)} className={`inline-flex items-center gap-1.5 hover:text-ink ${active ? "text-accent" : ""}`}>
@@ -402,14 +403,15 @@ function VideoRow({
   const bg = checked ? "bg-indigo-50" : "bg-white";
   const busy = BUSY.includes(video.status);
   const paused = video.status === "Paused" || video.status === "Completed";
-  const retryable = video.status === "Failed" || video.status === "Partial" || video.status === "Unsupported";
+  const retryable =
+    video.status === "Failed" || video.status === "Partial" || video.status === "Unsupported" || video.status === "Video Down";
 
   return (
     <tr className={`group ${checked ? "bg-indigo-50" : ""}`}>
-      <td className={`${td} sticky left-0 z-10 w-10 min-w-10 max-w-10 ${bg} px-0 text-center group-hover:bg-slate-50`}>
+      <td className={`${td} sticky left-0 z-10 w-10 min-w-10 max-w-10 ${bg} !px-0 text-center group-hover:bg-slate-50`}>
         <input type="checkbox" aria-label={`Select ${video.display_title}`} checked={checked} onChange={onToggle} className="h-4 w-4 cursor-pointer accent-[var(--color-accent)]" />
       </td>
-      <td className={`${td} sticky left-10 z-10 w-12 min-w-12 max-w-12 ${bg} px-0 text-center text-slate-500 group-hover:bg-slate-50`}>{index}</td>
+      <td className={`${td} sticky left-10 z-10 w-12 min-w-12 max-w-12 ${bg} !px-0 text-center text-slate-500 group-hover:bg-slate-50`}>{index}</td>
       <td className={`${td} sticky left-[88px] z-10 ${bg} shadow-[inset_-1px_0_0_var(--color-line)] group-hover:bg-slate-50`}>
         <div className="max-w-[300px]">
           {href ? (
@@ -432,19 +434,19 @@ function VideoRow({
       <td className={`${td} max-w-[180px] truncate text-slate-700 group-hover:bg-slate-50`} title={video.creator_name ?? undefined}>
         {video.creator_name ?? NA}
       </td>
-      <td className={`${td} text-right font-semibold tabular-nums text-ink group-hover:bg-slate-50`} title={video.current_views?.toLocaleString("en-US")}>
-        {video.current_views === null ? NA : formatCompact(video.current_views)}
+      <td className={`${td} text-center font-semibold tabular-nums text-ink group-hover:bg-slate-50`} title={video.current_views?.toLocaleString("en-US")}>
+        {video.current_views === null ? NA : formatNumber(video.current_views)}
       </td>
-      <td className={`${td} text-right tabular-nums text-slate-600 group-hover:bg-slate-50`}>
-        {video.previous_views === null ? <span className="text-slate-400">-</span> : formatCompact(video.previous_views)}
+      <td className={`${td} text-center tabular-nums text-slate-600 group-hover:bg-slate-50`}>
+        {video.previous_views === null ? <span className="text-slate-400">-</span> : formatNumber(video.previous_views)}
       </td>
-      <td className={`${td} text-right tabular-nums group-hover:bg-slate-50 ${growthTone(video.views_gained)}`}>
+      <td className={`${td} text-center tabular-nums group-hover:bg-slate-50 ${growthTone(video.views_gained)}`}>
         {video.views_gained === null ? <span className="text-slate-400">-</span> : formatSigned(video.views_gained)}
       </td>
-      <td className={`${td} text-right tabular-nums group-hover:bg-slate-50 ${growthTone(video.growth_pct)}`}>
+      <td className={`${td} text-center tabular-nums group-hover:bg-slate-50 ${growthTone(video.growth_pct)}`}>
         {video.growth_pct === null ? <span className="text-slate-400">-</span> : formatGrowth(video.growth_pct)}
       </td>
-      <td className={`${td} text-right tabular-nums group-hover:bg-slate-50`} title={video.engagement_basis ? "(likes + comments) / views" : undefined}>
+      <td className={`${td} text-center tabular-nums group-hover:bg-slate-50`} title={video.engagement_basis ? "(likes + comments) / views" : undefined}>
         {video.engagement_rate === null ? NA : formatPercent(video.engagement_rate)}
       </td>
       <td className={`${td} group-hover:bg-slate-50`}>

@@ -1,6 +1,6 @@
 export type VpPlatform = "youtube" | "instagram";
 
-export type VpStatus = "Pending" | "Processing" | "Tracking" | "Paused" | "Completed" | "Partial" | "Failed" | "Unsupported";
+export type VpStatus = "Pending" | "Processing" | "Tracking" | "Paused" | "Completed" | "Partial" | "Failed" | "Unsupported" | "Video Down";
 
 export type VpSortKey = "current_views" | "views_gained" | "growth_pct" | "engagement_rate" | "last_checked_at" | "created_at";
 
@@ -133,6 +133,8 @@ export interface VpJob {
   last_started_at: string | null;
   last_finished_at: string | null;
   last_message: string | null;
+  progress_done?: number | null;
+  progress_total?: number | null;
 }
 
 export interface VpDashboard {

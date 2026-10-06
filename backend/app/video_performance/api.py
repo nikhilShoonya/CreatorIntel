@@ -288,10 +288,14 @@ async def refresh_video(video_id: int, tracker: VideoTracker = Depends(get_track
 async def retry_video(video_id: int, tracker: VideoTracker = Depends(get_tracker)):
     await _require_video(video_id)
     ids = await run_in_threadpool(
-        repo.queue_for_processing, [video_id], (VideoStatus.FAILED, VideoStatus.UNSUPPORTED, VideoStatus.PARTIAL)
+        repo.queue_for_processing,
+        [video_id],
+        (VideoStatus.FAILED, VideoStatus.UNSUPPORTED, VideoStatus.PARTIAL, VideoStatus.VIDEO_DOWN),
     )
     if not ids:
-        raise HTTPException(status_code=409, detail="Only Failed, Partial or Unsupported videos can be retried")
+        raise HTTPException(
+            status_code=409, detail="Only Failed, Partial, Unsupported or Video Down videos can be retried"
+        )
     tracker.start_processing(ids)
     return ActionOut(affected=1, message="Retrying")
 
@@ -416,11 +420,13 @@ def _jobs(request: Request, tracker: VideoTracker) -> list[JobInfo]:
     jobs = []
     for job_type in (JobType.CREATOR_DISCOVERY, JobType.METRICS_REFRESH):
         run = runs.get(job_type)
+        progress = tracker.job_progress(job_type)
         jobs.append(
             JobInfo(
                 job_type=job_type, running=tracker.job_running(job_type), next_run_at=next_runs.get(job_type),
                 last_status=run.status if run else None, last_started_at=run.started_at if run else None,
                 last_finished_at=run.finished_at if run else None, last_message=run.message if run else None,
+                progress_done=progress[0] if progress else None, progress_total=progress[1] if progress else None,
             )
         )
     return jobs

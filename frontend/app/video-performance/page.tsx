@@ -143,6 +143,13 @@ function JobButton({ job, timezone, onRun }: { job: VpJob; timezone: string; onR
   const Icon = discovery ? Play : RefreshCw;
   const last = job.last_finished_at ? formatChecked(job.last_finished_at) : "never";
   const next = job.next_run_at ? formatDateTime(job.next_run_at) : "scheduler off";
+  
+  let progressText = "";
+  if (job.running && typeof job.progress_done === "number" && typeof job.progress_total === "number" && job.progress_total > 0) {
+    const percent = Math.round((job.progress_done / job.progress_total) * 100);
+    progressText = ` (${percent}%)`;
+  }
+
   return (
     <button
       type="button"
@@ -159,7 +166,7 @@ function JobButton({ job, timezone, onRun }: { job: VpJob; timezone: string; onR
       <span className="leading-tight">
         <span className={`block text-sm font-semibold ${discovery ? "text-indigo-700" : "text-emerald-700"}`}>{JOB_LABELS[job.job_type]}</span>
         <span className={`block text-xs ${discovery ? "text-indigo-600/80" : "text-emerald-700/80"}`}>
-          {job.running ? "Running now…" : `Run now · last ${last}${job.last_status === "failed" ? " (failed)" : ""}`}
+          {job.running ? `Running now…${progressText}` : `Run now · last ${last}${job.last_status === "failed" ? " (failed)" : ""}`}
         </span>
       </span>
     </button>

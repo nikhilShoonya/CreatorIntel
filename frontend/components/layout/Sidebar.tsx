@@ -63,7 +63,7 @@ function VideoPerformanceGroup({ pathname }: { pathname: string }) {
           {VIDEO_PERFORMANCE.map(({ href, label, Icon }) => {
             const active = isActive(pathname, href);
             return (
-              <Link key={href} href={href} aria-current={active ? "page" : undefined} className={itemClass(active)}>
+              <Link key={href} href={href} prefetch={true} aria-current={active ? "page" : undefined} className={itemClass(active)}>
                 <Icon size={16} aria-hidden="true" />
                 {label}
               </Link>
@@ -94,7 +94,7 @@ export function Sidebar() {
         {NAV.map(({ href, label, Icon }) => {
           const active = isActive(pathname, href);
           return (
-            <Link key={href} href={href} aria-current={active ? "page" : undefined} className={itemClass(active)}>
+            <Link key={href} href={href} prefetch={true} aria-current={active ? "page" : undefined} className={itemClass(active)}>
               <Icon size={18} aria-hidden="true" />
               {label}
             </Link>
@@ -103,6 +103,7 @@ export function Sidebar() {
         <VideoPerformanceGroup pathname={pathname} />
         <Link
           href={SETTINGS.href}
+          prefetch={true}
           aria-current={isActive(pathname, SETTINGS.href) ? "page" : undefined}
           className={itemClass(isActive(pathname, SETTINGS.href))}
         >
@@ -139,6 +140,7 @@ export function MobileNav() {
           <Link
             key={href}
             href={href}
+            prefetch={true}
             className={`flex shrink-0 items-center gap-2 rounded-md px-3 py-1.5 text-sm ${
               active ? "bg-accent-soft text-accent" : "text-slate-600"
             }`}

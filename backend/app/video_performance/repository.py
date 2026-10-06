@@ -144,7 +144,12 @@ def save_error(video_id: int, error: PlatformError) -> None:
         if video is None:
             return
         if video.status != VideoStatus.PAUSED:
-            video.status = VideoStatus.UNSUPPORTED if error.code == PlatformError.UNSUPPORTED else VideoStatus.FAILED
+            if error.code == PlatformError.UNSUPPORTED:
+                video.status = VideoStatus.UNSUPPORTED
+            elif error.code == PlatformError.NOT_FOUND:
+                video.status = VideoStatus.VIDEO_DOWN
+            else:
+                video.status = VideoStatus.FAILED
         video.status_reason = error.message
         video.last_checked_at = utcnow()
 

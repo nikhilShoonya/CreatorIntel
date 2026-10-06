@@ -19,11 +19,13 @@ class VideoStatus:
     PARTIAL = "Partial"
     FAILED = "Failed"
     UNSUPPORTED = "Unsupported"
+    VIDEO_DOWN = "Video Down"  # deleted, private or otherwise unavailable on the platform
 
-    ALL = (PENDING, PROCESSING, TRACKING, PAUSED, COMPLETED, PARTIAL, FAILED, UNSUPPORTED)
+    ALL = (PENDING, PROCESSING, TRACKING, PAUSED, COMPLETED, PARTIAL, FAILED, UNSUPPORTED, VIDEO_DOWN)
     ACTIVE_WORK = (PENDING, PROCESSING)
     # Checked automatically by the daily refresh job (failures are retried daily).
-    DAILY = (TRACKING, PARTIAL, FAILED)
+    # Video Down is included so a video that comes back online resumes tracking.
+    DAILY = (TRACKING, PARTIAL, FAILED, VIDEO_DOWN)
 
 
 class CreatorTrackingStatus:

@@ -15,10 +15,13 @@ export function formatCompact(value: number | null | undefined): string {
     if (abs >= size) {
       const scaled = value / size;
       const digits = Math.abs(scaled) >= 100 ? 0 : 1;
-      return `${scaled.toFixed(digits).replace(/\.0$/, "")}${suffix}`;
+      // Truncate rather than round (e.g. 25.863 -> 25.8)
+      const pow = Math.pow(10, digits);
+      const truncated = Math.trunc(scaled * pow) / pow;
+      return `${truncated.toFixed(digits).replace(/\.0$/, "")}${suffix}`;
     }
   }
-  return Math.round(value).toString();
+  return Math.trunc(value).toString();
 }
 
 export function formatNumber(value: number | null | undefined): string {

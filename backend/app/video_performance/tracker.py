@@ -13,7 +13,7 @@ import time
 import uuid
 from datetime import timedelta
 from collections import defaultdict
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from app.config.settings import Settings, get_settings
@@ -55,6 +55,8 @@ class VideoTracker:
         self._job_locks = {JobType.METRICS_REFRESH: asyncio.Lock(), JobType.CREATOR_DISCOVERY: asyncio.Lock()}
         self._tasks: set[asyncio.Task] = set()
         self._in_flight: set[int] = set()
+        # Live progress of a running job: job_type -> [done, total]
+        self._progress: dict[str, list[int]] = {}
 
     # ------------------------------------------------------------ scheduling
     def _schedule(self, coro: Coroutine[Any, Any, Any], name: str) -> None:
@@ -82,6 +84,16 @@ class VideoTracker:
     def job_running(self, job_type: str) -> bool:
         return self._job_locks[job_type].locked()
 
+    def job_progress(self, job_type: str) -> tuple[int, int] | None:
+        """(done, total) of the running job, or None when it is not running / not counted yet."""
+        progress = self._progress.get(job_type)
+        return (progress[0], progress[1]) if progress and self.job_running(job_type) else None
+
+    def _tick(self, job_type: str) -> None:
+        progress = self._progress.get(job_type)
+        if progress:
+            progress[0] = min(progress[0] + 1, progress[1])
+
     async def shutdown(self) -> None:
         for task in list(self._tasks):
             task.cancel()
@@ -95,19 +107,25 @@ class VideoTracker:
             self.start_processing(video_ids)
 
     # ------------------------------------------------------------ processing
-    async def process_videos(self, video_ids: list[int]) -> tuple[int, int]:
-        """Fetch + store metrics for the given videos. Returns (succeeded, failed)."""
+    async def process_videos(self, video_ids: list[int], on_done: Callable[[], None] | None = None) -> tuple[int, int]:
+        """Fetch + store metrics for the given videos. Returns (succeeded, failed).
+
+        ``on_done`` is called once per video when its result has been saved (used for job progress).
+        """
         # Skip videos another task is already checking (e.g. "Refresh now" during the daily job).
         wanted = sorted(set(video_ids) - self._in_flight)
+        if on_done:
+            for _ in range(len(set(video_ids)) - len(wanted)):
+                on_done()
         if not wanted:
             return 0, 0
         self._in_flight.update(wanted)
         try:
-            return await self._process_videos(wanted)
+            return await self._process_videos(wanted, on_done)
         finally:
             self._in_flight.difference_update(wanted)
 
-    async def _process_videos(self, video_ids: list[int]) -> tuple[int, int]:
+    async def _process_videos(self, video_ids: list[int], on_done: Callable[[], None] | None = None) -> tuple[int, int]:
         started = time.perf_counter()
         rows = await asyncio.to_thread(repo.claim_videos, video_ids)
         results: dict[int, VideoMetrics | PlatformError] = {}
@@ -155,6 +173,11 @@ class VideoTracker:
             except Exception:
                 failed += 1
                 logger.exception("vt_video_save_crashed video_id=%s", row["id"])
+            if on_done:
+                on_done()
+        if on_done:
+            for _ in range(len(video_ids) - len(rows)):  # videos that could not be claimed (deleted/paused)
+                on_done()
 
         await asyncio.gather(*(self._analyse(video_id) for video_id in to_analyse))
         log_event(
@@ -257,36 +280,45 @@ class VideoTracker:
             await asyncio.to_thread(repo.save_creator_result, creator_id, error=exc)
             log_event(logger, logging.WARNING, "vt_creator_failed", creator_id=creator_id, platform=row["platform"], reason=exc.message)
 
-    async def discover(self, creator_ids: list[int]) -> tuple[int, int, int]:
-        """Check creators for videos published since tracking started. Returns (ok, failed, new videos)."""
+    async def discover(
+        self, creator_ids: list[int], on_done: Callable[[], None] | None = None
+    ) -> tuple[int, int, int]:
+        """Check creators for videos published since tracking started. Returns (ok, failed, new videos).
+
+        ``on_done`` is called once per creator when it has been checked (used for job progress).
+        """
         ok = failed = 0
         new_video_ids: list[int] = []
         for creator_id in creator_ids:
-            started = time.perf_counter()
-            row = await asyncio.to_thread(repo.creator_row, creator_id)
-            if row is None or not row["enabled"]:
-                continue
-            ctx = {"creator_id": creator_id, "platform": row["platform"], "stage": "discovery"}
             try:
-                if row["platform"] == "youtube" and not row["uploads_playlist_id"]:
-                    await self._resolve_creator(row)
-                    row = await asyncio.to_thread(repo.creator_row, creator_id) or row
-                latest = await self._latest_videos(row, DISCOVERY_LOOKBACK)
-                since = row["tracking_since"]
-                fresh = [v for v in latest if v.published_at is not None and since is not None and v.published_at >= since]
-                ids = await asyncio.to_thread(repo.add_discovered_videos, creator_id, fresh, True)
-                await asyncio.to_thread(repo.save_creator_result, creator_id, discovered=len(ids))
-                new_video_ids.extend(ids)
-                ok += 1
-                log_event(logger, logging.INFO, "vt_discovery_ok", **ctx, new_videos=len(ids),
-                          duration_s=f"{time.perf_counter() - started:.1f}")
-            except PlatformError as exc:
-                failed += 1
-                await asyncio.to_thread(repo.save_creator_result, creator_id, error=exc)
-                log_event(logger, logging.WARNING, "vt_discovery_failed", **ctx, code=exc.code, reason=exc.message)
-            except Exception:
-                failed += 1
-                logger.exception("vt_discovery_crashed creator_id=%s", creator_id)
+                started = time.perf_counter()
+                row = await asyncio.to_thread(repo.creator_row, creator_id)
+                if row is None or not row["enabled"]:
+                    continue
+                ctx = {"creator_id": creator_id, "platform": row["platform"], "stage": "discovery"}
+                try:
+                    if row["platform"] == "youtube" and not row["uploads_playlist_id"]:
+                        await self._resolve_creator(row)
+                        row = await asyncio.to_thread(repo.creator_row, creator_id) or row
+                    latest = await self._latest_videos(row, DISCOVERY_LOOKBACK)
+                    since = row["tracking_since"]
+                    fresh = [v for v in latest if v.published_at is not None and since is not None and v.published_at >= since]
+                    ids = await asyncio.to_thread(repo.add_discovered_videos, creator_id, fresh, True)
+                    await asyncio.to_thread(repo.save_creator_result, creator_id, discovered=len(ids))
+                    new_video_ids.extend(ids)
+                    ok += 1
+                    log_event(logger, logging.INFO, "vt_discovery_ok", **ctx, new_videos=len(ids),
+                              duration_s=f"{time.perf_counter() - started:.1f}")
+                except PlatformError as exc:
+                    failed += 1
+                    await asyncio.to_thread(repo.save_creator_result, creator_id, error=exc)
+                    log_event(logger, logging.WARNING, "vt_discovery_failed", **ctx, code=exc.code, reason=exc.message)
+                except Exception:
+                    failed += 1
+                    logger.exception("vt_discovery_crashed creator_id=%s", creator_id)
+            finally:
+                if on_done:
+                    on_done()
         if new_video_ids:
             await self.process_videos(new_video_ids)
         return ok, failed, len(new_video_ids)
@@ -324,14 +356,18 @@ class VideoTracker:
         try:
             ids = await asyncio.to_thread(repo.videos_due_for_refresh, self.settings.video_tracking_max_days)
             total = len(ids)
+            self._progress[JobType.METRICS_REFRESH] = [0, total]
+            tick = lambda: self._tick(JobType.METRICS_REFRESH)  # noqa: E731
             for start in range(0, len(ids), 200):  # bounded batches
-                ok, bad = await self.process_videos(ids[start : start + 200])
+                ok, bad = await self.process_videos(ids[start : start + 200], tick)
                 succeeded, failed = succeeded + ok, failed + bad
             message = f"Refreshed {succeeded} of {total} videos in {time.perf_counter() - started:.0f}s"
             await asyncio.to_thread(repo.finish_job, run_id, total, succeeded, failed, message)
         except Exception as exc:
             logger.exception("vt_refresh_job_crashed")
             await asyncio.to_thread(repo.finish_job, run_id, total, succeeded, failed, f"Job stopped: {type(exc).__name__}", False)
+        finally:
+            self._progress.pop(JobType.METRICS_REFRESH, None)
         log_event(logger, logging.INFO, "vt_job_metrics_refresh", trigger=trigger, total=total, succeeded=succeeded, failed=failed)
 
     async def _discovery(self, trigger: str) -> None:
@@ -341,10 +377,13 @@ class VideoTracker:
         try:
             creator_ids = await asyncio.to_thread(repo.enabled_creator_ids)
             total = len(creator_ids)
-            ok, failed, new = await self.discover(creator_ids)
+            self._progress[JobType.CREATOR_DISCOVERY] = [0, total]
+            ok, failed, new = await self.discover(creator_ids, lambda: self._tick(JobType.CREATOR_DISCOVERY))
             message = f"Checked {total} creators, {new} new videos, in {time.perf_counter() - started:.0f}s"
             await asyncio.to_thread(repo.finish_job, run_id, total, ok, failed, message)
         except Exception as exc:
             logger.exception("vt_discovery_job_crashed")
             await asyncio.to_thread(repo.finish_job, run_id, total, ok, failed, f"Job stopped: {type(exc).__name__}", False)
+        finally:
+            self._progress.pop(JobType.CREATOR_DISCOVERY, None)
         log_event(logger, logging.INFO, "vt_job_creator_discovery", trigger=trigger, creators=total, new_videos=new, failed=failed)

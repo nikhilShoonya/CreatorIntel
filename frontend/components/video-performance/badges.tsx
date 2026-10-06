@@ -1,4 +1,4 @@
-import { AlertCircle, Ban, CheckCircle2, Clock3, Frown, Loader2, Meh, PauseCircle, Radio, Smile } from "lucide-react";
+import { AlertCircle, Ban, CheckCircle2, Clock3, Frown, Loader2, Meh, PauseCircle, Radio, Smile, VideoOff } from "lucide-react";
 
 import type { VpCreator, VpStatus } from "@/types/videoPerformance";
 
@@ -13,6 +13,7 @@ const VIDEO_STATUS: Record<VpStatus, { cls: string; Icon: typeof Smile; spin?: b
   Completed: { cls: "bg-sky-50 text-sky-700 ring-sky-200", Icon: CheckCircle2 },
   Failed: { cls: "bg-rose-50 text-rose-700 ring-rose-200", Icon: AlertCircle },
   Unsupported: { cls: "bg-zinc-100 text-zinc-600 ring-zinc-200", Icon: Ban },
+  "Video Down": { cls: "bg-red-50 text-red-700 ring-red-300", Icon: VideoOff },
 };
 
 export function VpStatusBadge({ status, reason }: { status: VpStatus; reason?: string | null }) {

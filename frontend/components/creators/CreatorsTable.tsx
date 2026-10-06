@@ -265,7 +265,7 @@ export function CreatorsTable({ title, uploadId, initialQuery = "", refreshToken
           <table className="w-full min-w-[1480px] border-separate border-spacing-0 text-sm">
             <thead className="sticky top-0 z-20">
               <tr className="text-left text-xs font-semibold text-slate-600">
-                <Th className="sticky left-0 z-30 w-10 min-w-10 max-w-10 bg-slate-50 px-0 text-center">
+                <Th className="sticky left-0 z-30 w-10 min-w-10 max-w-10 bg-slate-50 !px-0 text-center">
                   <input
                     type="checkbox"
                     aria-label="Select all rows on this page"
@@ -274,14 +274,14 @@ export function CreatorsTable({ title, uploadId, initialQuery = "", refreshToken
                     className="h-4 w-4 cursor-pointer accent-[var(--color-accent)]"
                   />
                 </Th>
-                <Th className="sticky left-10 z-30 w-12 min-w-12 max-w-12 bg-slate-50 px-0 text-center">#</Th>
+                <Th className="sticky left-10 z-30 w-12 min-w-12 max-w-12 bg-slate-50 !px-0 text-center">#</Th>
                 <Th className="sticky left-[88px] z-30 min-w-[190px] bg-slate-50 shadow-[inset_-1px_0_0_var(--color-line)]">Channel Name</Th>
                 <Th>Platform</Th>
                 <Th>Channel Link</Th>
-                <SortTh label="Subscribers / Followers" sortKey="audience" sort={sort} onSort={toggleSort} />
-                <SortTh label="Average Views" sortKey="average_views" sort={sort} onSort={toggleSort} />
+                <SortTh label="Subscribers / Followers" sortKey="audience" sort={sort} onSort={toggleSort} align="center" />
+                <SortTh label="Average Views" sortKey="average_views" sort={sort} onSort={toggleSort} align="center" />
                 <Th>Top Performing Video</Th>
-                <SortTh label="Engagement Rate" sortKey="engagement_rate" sort={sort} onSort={toggleSort} />
+                <SortTh label="Engagement Rate" sortKey="engagement_rate" sort={sort} onSort={toggleSort} align="center" />
                 <SortTh label="Genre" sortKey="genre" sort={sort} onSort={toggleSort} />
                 <Th>Language</Th>
                 <SortTh label="Sentiment" sortKey="sentiment" sort={sort} onSort={toggleSort} />
@@ -324,7 +324,14 @@ export function CreatorsTable({ title, uploadId, initialQuery = "", refreshToken
       <CreatorDetailsPanel
         creatorId={selectedId}
         onClose={() => setSelectedId(null)}
-        onAction={(kind, id) => runAction(() => (kind === "retry" ? api.retry(id) : api.reanalyze(id)))}
+        onAction={async (kind, id) => {
+          try {
+            const result = kind === "retry" ? await api.retry(id) : await api.reanalyze(id);
+            showToast({ tone: "success", message: result.message });
+          } catch (err) {
+            showToast({ tone: "error", message: err instanceof Error ? err.message : "Action failed" });
+          }
+        }}
         onEdit={(creator) => {
           setSelectedId(null);
           setFormTarget(creator);
@@ -373,12 +380,13 @@ function Th({ children, className = "" }: { children: ReactNode; className?: str
   return <th className={`whitespace-nowrap border-b border-line bg-slate-50 px-4 py-3 ${className}`}>{children}</th>;
 }
 
-function SortTh({ label, sortKey, sort, onSort }: { label: string; sortKey: SortKey; sort: { key: SortKey; dir: SortDir } | null; onSort: (key: SortKey) => void }) {
+function SortTh({ label, sortKey, sort, onSort, align = "left" }: { label: string; sortKey: SortKey; sort: { key: SortKey; dir: SortDir } | null; onSort: (key: SortKey) => void; align?: "left" | "center" | "right" }) {
   const active = sort?.key === sortKey;
   const Icon = !active ? ArrowUpDown : sort.dir === "desc" ? ArrowDown : ArrowUp;
+  const alignClass = align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left";
   return (
     <th
-      className="whitespace-nowrap border-b border-line bg-slate-50 px-4 py-3"
+      className={`whitespace-nowrap border-b border-line bg-slate-50 px-4 py-3 ${alignClass}`}
       aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
     >
       <button type="button" onClick={() => onSort(sortKey)} className={`inline-flex items-center gap-1.5 hover:text-ink ${active ? "text-accent" : ""}`}>
@@ -408,7 +416,7 @@ function CreatorRow({
   const bg = checked ? "bg-indigo-50" : "bg-white";
   return (
     <tr className={`group ${checked ? "bg-indigo-50" : ""}`}>
-      <td className={`${td} sticky left-0 z-10 w-10 min-w-10 max-w-10 ${bg} px-0 text-center group-hover:bg-slate-50`}>
+      <td className={`${td} sticky left-0 z-10 w-10 min-w-10 max-w-10 ${bg} !px-0 text-center group-hover:bg-slate-50`}>
         <input
           type="checkbox"
           aria-label={`Select ${creator.channel_name}`}
@@ -417,7 +425,7 @@ function CreatorRow({
           className="h-4 w-4 cursor-pointer accent-[var(--color-accent)]"
         />
       </td>
-      <td className={`${td} sticky left-10 z-10 w-12 min-w-12 max-w-12 ${bg} px-0 text-center text-slate-500 group-hover:bg-slate-50`}>{index}</td>
+      <td className={`${td} sticky left-10 z-10 w-12 min-w-12 max-w-12 ${bg} !px-0 text-center text-slate-500 group-hover:bg-slate-50`}>{index}</td>
       <td className={`${td} sticky left-[88px] z-10 ${bg} font-medium text-ink shadow-[inset_-1px_0_0_var(--color-line)] group-hover:bg-slate-50`}>
         <button type="button" onClick={() => actions.onView(creator)} className="max-w-[200px] truncate text-left hover:text-accent" title={creator.channel_name}>
           {creator.channel_name}
@@ -429,11 +437,11 @@ function CreatorRow({
       <td className={`${td} group-hover:bg-slate-50`}>
         <ChannelLinkCell creator={creator} />
       </td>
-      <td className={`${td} font-medium text-slate-800 group-hover:bg-slate-50`} title={creator.audience_count?.toLocaleString("en-US")}>
+      <td className={`${td} text-center font-medium tabular-nums text-slate-800 group-hover:bg-slate-50`} title={creator.audience_count?.toLocaleString("en-US")}>
         {creator.audience_count === null ? NA_CELL : formatCompact(creator.audience_count)}
       </td>
       <td
-        className={`${td} text-slate-800 group-hover:bg-slate-50`}
+        className={`${td} text-center tabular-nums text-slate-800 group-hover:bg-slate-50`}
         title={averageTooltip(creator)}
       >
         {creator.average_views === null ? NA_CELL : formatCompact(creator.average_views)}
@@ -441,7 +449,7 @@ function CreatorRow({
       <td className={`${td} group-hover:bg-slate-50`}>
         <TopVideoCell creator={creator} />
       </td>
-      <td className={`${td} group-hover:bg-slate-50`}>
+      <td className={`${td} text-center tabular-nums group-hover:bg-slate-50`}>
         <EngagementCell creator={creator} />
       </td>
       <td className={`${td} group-hover:bg-slate-50`}>

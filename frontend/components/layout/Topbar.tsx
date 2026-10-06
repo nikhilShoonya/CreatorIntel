@@ -1,13 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
-import { Check, RefreshCw, Search } from "lucide-react";
+import { Check, Loader2, RefreshCw, Search } from "lucide-react";
 
-import { refreshAllData } from "@/hooks/useApi";
+import { Dialog } from "@/components/ui/Dialog";
+
+import { refreshAllData, useApi } from "@/hooks/useApi";
 import { useStoredValue } from "@/hooks/useStoredValue";
 import { initials } from "@/lib/format";
+import { vpApi } from "@/lib/vpApi";
 
 export const USER_NAME_KEY = "creatorintel:user-name";
 
@@ -52,32 +55,70 @@ export function Topbar() {
 
 /** One button for the whole site: reloads every piece of data on the current page from the backend. */
 function RefreshDataButton() {
-  const [state, setState] = useState<"idle" | "busy" | "done">("idle");
+  const [clickBusy, setClickBusy] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const pathname = usePathname();
 
-  async function onClick() {
-    setState("busy");
-    await refreshAllData();
-    setUpdatedAt(new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }));
-    setState("done");
-    window.setTimeout(() => setState((current) => (current === "done" ? "idle" : current)), 2000);
+  const { data: jobs } = useApi("topbar-jobs", () => vpApi.jobs(), {
+    refreshMs: (d) => (d?.some((j) => j.running) ? 4000 : false),
+  });
+
+  const runningJob = jobs?.find((j) => j.running);
+  let progressText = "Refreshing…";
+  if (runningJob && typeof runningJob.progress_done === "number" && typeof runningJob.progress_total === "number" && runningJob.progress_total > 0) {
+    const percent = Math.round((runningJob.progress_done / runningJob.progress_total) * 100);
+    progressText = `Refreshing… ${percent}%`;
   }
 
+  const isBusy = clickBusy || !!runningJob;
+  const state = isBusy ? "busy" : updatedAt ? "done" : "idle";
+
+  async function onClick() {
+    setClickBusy(true);
+    if (pathname.includes("/video-performance")) {
+      try {
+        await vpApi.runJob("metrics_refresh");
+      } catch (e) {
+        console.error("Failed to start metrics_refresh job", e);
+      }
+    }
+    await refreshAllData();
+    setUpdatedAt(new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }));
+    setClickBusy(false);
+    window.setTimeout(() => {
+      setUpdatedAt(null);
+    }, 2000);
+  }
+
+  const isVideoPage = pathname.includes("/video-performance");
+  const loadingTitle = isVideoPage ? "Refreshing Tracking Videos…" : "Refreshing Creator List…";
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={state === "busy"}
-      title={updatedAt ? `Reload all data · last refreshed at ${updatedAt}` : "Reload all data"}
-      aria-live="polite"
-      className="inline-flex h-9 items-center gap-2 rounded-lg border border-line bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 hover:text-ink disabled:cursor-wait"
-    >
-      {state === "done" ? (
-        <Check size={16} className="text-emerald-600" />
-      ) : (
-        <RefreshCw size={16} className={state === "busy" ? "animate-spin text-accent" : ""} />
-      )}
-      <span className="hidden md:inline">{state === "busy" ? "Refreshing…" : state === "done" ? "Updated" : "Refresh data"}</span>
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={clickBusy}
+        title={updatedAt ? `Reload all data · last refreshed at ${updatedAt}` : "Reload all data"}
+        aria-live="polite"
+        className="inline-flex h-9 items-center gap-2 rounded-lg border border-line bg-white px-3 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 hover:text-ink disabled:cursor-wait"
+      >
+        {state === "done" ? (
+          <Check size={16} className="text-emerald-600" />
+        ) : (
+          <RefreshCw size={16} />
+        )}
+        <span className="hidden md:inline">{state === "done" ? "Updated" : "Refresh data"}</span>
+      </button>
+
+      <Dialog open={state === "busy"} title={loadingTitle} onClose={() => {}} size="sm">
+        <div className="flex flex-col items-center justify-center py-10">
+          <Loader2 size={36} className="animate-spin text-accent mb-6" />
+          <p className="text-base text-slate-700 font-medium">
+            {progressText}
+          </p>
+        </div>
+      </Dialog>
+    </>
   );
 }

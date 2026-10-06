@@ -238,6 +238,9 @@ class JobInfo(BaseModel):
     last_started_at: UTC | None = None
     last_finished_at: UTC | None = None
     last_message: str | None = None
+    # Live progress while running (videos for the refresh job, creators for discovery)
+    progress_done: int | None = None
+    progress_total: int | None = None
 
 
 class TrendPoint(BaseModel):
