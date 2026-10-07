@@ -193,9 +193,13 @@ export function InstagramUsageCard() {
         </span>
       </p>
       <UsageBar label="Instagram hourly limit used" percent={Math.min(ig.percent, 100)} full={blocked} valueNow={ig.percent} valueMax={100} />
-      {blocked && (
+      {blocked ? (
         <p className="mt-2 text-xs font-medium text-rose-600">
           Meta is throttling requests. Access returns in about {ig.regain_access_minutes} min.
+        </p>
+      ) : (
+        <p className="mt-2 text-xs text-muted">
+          Meta&apos;s standard limit is roughly 200 requests per hour for a connected Professional account.
         </p>
       )}
       <p className="mt-2 text-xs text-muted">
