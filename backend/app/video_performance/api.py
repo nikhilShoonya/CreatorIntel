@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -470,6 +470,7 @@ async def dashboard(
         asyncio.to_thread(_jobs, request, tracker),
         asyncio.to_thread(queries.trend, days),
     )
+    totals = cast(dict[str, Any], totals)
     listed = {v.id for v in (*top, *engagement)}
     overall, by_platform = sentiment
     return DashboardOut(
