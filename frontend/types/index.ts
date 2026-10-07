@@ -15,6 +15,7 @@ export interface Creator {
   channel_url: string;
   channel_display_url: string | null;
   normalized_identifier: string;
+  profile_picture_url: string | null;
   followers_count: number | null;
   subscriber_count: number | null;
   audience_count: number | null;

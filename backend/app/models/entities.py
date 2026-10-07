@@ -43,6 +43,7 @@ class Creator(Base):
     platform_id: Mapped[str | None] = mapped_column(String(100))
     platform_display_name: Mapped[str | None] = mapped_column(String(300))
     account_access: Mapped[str | None] = mapped_column(String(40))
+    profile_picture_url: Mapped[str | None] = mapped_column(String(2048))  # channel / account avatar
 
     # Audience + performance (API data or calculated from API data)
     followers_count: Mapped[int | None] = mapped_column(BigInteger)

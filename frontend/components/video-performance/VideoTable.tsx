@@ -116,10 +116,10 @@ export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Pr
     }
   }
 
-  async function exportAs(kind: "excel" | "csv") {
+  async function exportAs(kind: "excel" | "csv", layout: "performance" | "upload" = "performance") {
     setExporting(true);
     try {
-      await vpApi.exportVideos(kind, filters); // same filters and sort as the table
+      await vpApi.exportVideos(kind, filters, layout); // same filters and sort as the table
     } catch (err) {
       onToast("error", err instanceof Error ? err.message : "Export failed");
     } finally {
@@ -175,7 +175,7 @@ export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Pr
         <div className="ml-auto flex gap-2">
           <Menu
             label="Export tracked videos"
-            width={180}
+            width={265}
             trigger={(props) => (
               <Button variant="soft" disabled={!data || data.total === 0 || exporting} {...props}>
                 {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
@@ -184,8 +184,10 @@ export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Pr
               </Button>
             )}
             items={[
-              { label: "Export Excel", icon: <FileSpreadsheet size={15} className="text-emerald-600" />, onSelect: () => exportAs("excel") },
-              { label: "Export CSV", icon: <FileText size={15} className="text-slate-500" />, onSelect: () => exportAs("csv") },
+              { label: "Full data (18 columns) · Excel", icon: <FileSpreadsheet size={15} className="text-emerald-600" />, onSelect: () => exportAs("excel") },
+              { label: "Full data (18 columns) · CSV", icon: <FileText size={15} className="text-slate-500" />, onSelect: () => exportAs("csv") },
+              { label: "Import list (4 columns) · Excel", icon: <FileSpreadsheet size={15} className="text-emerald-600" />, onSelect: () => exportAs("excel", "upload") },
+              { label: "Import list (4 columns) · CSV", icon: <FileText size={15} className="text-slate-500" />, onSelect: () => exportAs("csv", "upload") },
             ]}
           />
           <Button onClick={() => act(() => vpApi.retryFailed())} disabled={failedCount === 0} title="Retry every video whose last check failed">

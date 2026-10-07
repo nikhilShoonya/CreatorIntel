@@ -29,6 +29,7 @@ class ChannelProfile:
     audience_count: int | None  # subscribers (YouTube) or followers (Instagram)
     account_access: str  # e.g. "public_channel", "professional_account"
     website: str | None = None
+    profile_picture_url: str | None = None  # avatar URL from the platform API
     items: list[ContentItem] = field(default_factory=list)
     source: str = ""  # e.g. "youtube_data_api_v3"
     # Set when the input link was not a channel link (e.g. a video) and the channel was resolved by the API

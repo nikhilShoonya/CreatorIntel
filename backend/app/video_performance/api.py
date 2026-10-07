@@ -143,6 +143,7 @@ async def export_upload_rows(upload_id: str, format: Literal["csv", "excel"] = "
 @router.get("/exports/{kind}")
 async def export_videos(
     kind: Literal["excel", "csv"],
+    layout: Literal["performance", "upload"] = "performance",
     q: str | None = Query(default=None, max_length=200),
     platform: Literal["youtube", "instagram"] | None = None,
     creator: str | None = Query(default=None, max_length=300),
@@ -150,10 +151,19 @@ async def export_videos(
     sort_by: queries.SortKey | None = None,
     sort_dir: Literal["asc", "desc"] = "desc",
 ):
-    """Tracked videos (respecting the table's filters) as Excel or CSV."""
+    """Tracked videos (respecting the table's filters) as a report or import-ready list."""
     filters = queries.VideoFilters(q=q or None, platform=platform, creator=creator or None, status=status,
                                    sort_by=sort_by, sort_dir=sort_dir)
     videos = await run_in_threadpool(queries.export_videos, filters)
+    if layout == "upload":
+        columns = ["Video Link", "Creator Name", "Platform", "Username"]
+        table = [
+            [v.video_url, v.creator_name, "YouTube" if v.platform == "youtube" else "Instagram",
+             v.owner_username if v.platform == "instagram" else None]
+            for v in videos
+        ]
+        content = await run_in_threadpool(table_bytes, columns, table, kind, "Video list", True)
+        return _file_response(content, kind, f"video_list_upload_ready_{utcnow().strftime('%Y%m%d_%H%M')}")
     columns = [
         "Video", "Video URL", "Platform", "Creator", "Current Views", "Previous Views", "Views Gained", "Growth %",
         "Likes", "Comments", "Engagement Rate (%)", "Sentiment", "Sentiment Confidence", "Tracking Status", "Notes",
@@ -162,16 +172,22 @@ async def export_videos(
     def fmt(value):
         return as_utc(value).strftime("%Y-%m-%d %H:%M") if value else None
 
+    def shown(value, missing="N/A"):
+        """Use the library's visible placeholder without changing real zero values."""
+        return missing if value is None or value == "" else value
+
     table = [
         [
             VideoOut.model_validate(v).display_title, v.video_url, "YouTube" if v.platform == "youtube" else "Instagram",
-            v.creator_name, v.current_views, v.previous_views, v.views_gained, v.growth_pct, v.likes, v.comments,
-            v.engagement_rate, v.sentiment, v.sentiment_confidence, v.status, v.status_reason,
-            fmt(v.last_checked_at), fmt(v.published_at), v.source,
+            shown(v.creator_name), shown(v.current_views), shown(v.previous_views, "-"),
+            shown(v.views_gained, "-"), shown(v.growth_pct, "-"), shown(v.likes), shown(v.comments),
+            shown(v.engagement_rate), shown(v.sentiment), shown(v.sentiment_confidence), v.status,
+            shown(v.status_reason), shown(fmt(v.last_checked_at), "Never"), shown(fmt(v.published_at)),
+            shown(v.source),
         ]
         for v in videos
     ]
-    content = await run_in_threadpool(table_bytes, columns, table, kind, "Tracked videos")
+    content = await run_in_threadpool(table_bytes, columns, table, kind, "Tracked videos", True)
     return _file_response(content, kind, f"video_performance_{utcnow().strftime('%Y%m%d_%H%M')}")
 
 

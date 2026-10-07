@@ -20,6 +20,7 @@ class CreatorOut(BaseModel):
     platform: str
     channel_url: str
     normalized_identifier: str
+    profile_picture_url: str | None = None
 
     followers_count: int | None
     subscriber_count: int | None

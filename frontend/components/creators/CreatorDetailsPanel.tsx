@@ -5,6 +5,7 @@ import { ExternalLink, Loader2, Pencil, RefreshCw, Sparkles, Trash2, X } from "l
 
 import { SentimentBadge, StatusBadge } from "@/components/ui/Badges";
 import { Button, ErrorBanner } from "@/components/ui/controls";
+import { CreatorAvatar, platformGradient } from "@/components/ui/CreatorAvatar";
 import { PlatformIcon } from "@/components/ui/PlatformIcon";
 import { useCreatorDetail } from "@/hooks/useData";
 import {
@@ -169,16 +170,119 @@ function Row({ label, children, hint }: { label: string; children: ReactNode; hi
   );
 }
 
+function StatPill({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-line bg-slate-50 px-2.5 py-0.5 text-xs font-medium text-slate-700">
+      {children}
+    </span>
+  );
+}
+
+/** Creator Information as a profile card: platform cover, profile picture, name, link and quick stats. */
+function ProfileCard({ creator }: { creator: CreatorDetail }) {
+  const href = safeHref(creator.channel_url);
+  const isPlatform = creator.platform === "youtube" || creator.platform === "instagram";
+  const displayName = creator.platform_display_name || creator.channel_name;
+  const audienceLabel = creator.platform === "youtube" ? "subscribers" : "followers";
+
+  return (
+    <section>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Creator Information</h3>
+      <div className="overflow-hidden rounded-lg border border-line">
+        <div className="relative h-20" style={{ background: platformGradient(creator.platform) }} aria-hidden="true">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_85%_20%,rgba(255,255,255,0.35),transparent_55%)]" />
+        </div>
+        <div className="flex items-end gap-4 px-4">
+          {creator.profile_picture_url ? (
+            <a
+              href={creator.profile_picture_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="-mt-10 shrink-0 rounded-full transition-opacity hover:opacity-90"
+              title="View profile picture"
+            >
+              <CreatorAvatar
+                name={displayName}
+                platform={creator.platform}
+                src={creator.profile_picture_url}
+                size={84}
+                badge
+                className="rounded-full shadow-md ring-4 ring-white"
+              />
+            </a>
+          ) : (
+            <CreatorAvatar
+              name={displayName}
+              platform={creator.platform}
+              src={creator.profile_picture_url}
+              size={84}
+              badge
+              className="-mt-10 rounded-full shadow-md ring-4 ring-white"
+            />
+          )}
+          <div className="min-w-0 flex-1 pb-1 pt-2">
+            <p className="truncate text-base font-semibold text-ink" title={displayName}>
+              {displayName}
+            </p>
+            {href && isPlatform ? (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block truncate text-sm text-accent hover:underline"
+              >
+                {creator.channel_display_url}
+              </a>
+            ) : (
+              <span className="block truncate text-sm text-slate-500">{creator.channel_url || NA}</span>
+            )}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1.5 px-4 pb-4 pt-3">
+          {creator.audience_count !== null && (
+            <StatPill>
+              <span className="font-semibold text-ink">{formatCompact(creator.audience_count)}</span> {audienceLabel}
+            </StatPill>
+          )}
+          {creator.average_views !== null && (
+            <StatPill>
+              <span className="font-semibold text-ink">{formatCompact(creator.average_views)}</span> avg views
+            </StatPill>
+          )}
+          {creator.genre && <StatPill>{creator.genre}</StatPill>}
+          {creator.language && <StatPill>{creator.language}</StatPill>}
+        </div>
+        <dl className="divide-y divide-line border-t border-line">
+          {displayName !== creator.channel_name && <Row label="Channel name">{creator.channel_name}</Row>}
+          <Row label="Platform">
+            <span className="inline-flex items-center gap-1.5">
+              <PlatformIcon platform={creator.platform} size={16} />
+              {platformLabel(creator.platform)}
+            </span>
+          </Row>
+          <Row label="Account access">
+            {creator.account_access ? ACCESS_LABELS[creator.account_access] ?? humanize(creator.account_access) : NA}
+          </Row>
+          {creator.platform_id && (
+            <Row label={creator.platform === "youtube" ? "Channel ID" : "Account ID"}>
+              <span className="font-mono text-xs text-slate-600">{creator.platform_id}</span>
+            </Row>
+          )}
+        </dl>
+      </div>
+    </section>
+  );
+}
+
 function DetailBody({ creator }: { creator: CreatorDetail }) {
   const audienceLabel = creator.platform === "youtube" ? "Subscribers" : "Followers";
-  const href = safeHref(creator.channel_url);
   const videoHref = safeHref(creator.top_video_url);
   const provenance = creator.provenance ?? {};
 
   return (
-    <div className="grid gap-5 lg:grid-cols-2">
+    <div className="space-y-5">
       {creator.issues && creator.issues.length > 0 && (
-        <div className="rounded-lg lg:col-span-2 border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <p className="mb-1 font-medium">Notes</p>
           <ul className="list-disc space-y-0.5 pl-5">
             {creator.issues.map((issue) => (
@@ -188,104 +292,95 @@ function DetailBody({ creator }: { creator: CreatorDetail }) {
         </div>
       )}
 
-      <Section title="Creator Information">
-        <Row label="Channel name">{creator.channel_name}</Row>
-        {creator.platform_display_name && creator.platform_display_name !== creator.channel_name && (
-          <Row label="Name on platform">{creator.platform_display_name}</Row>
-        )}
-        <Row label="Platform">{platformLabel(creator.platform)}</Row>
-        <Row label="Channel URL">
-          {href && (creator.platform === "youtube" || creator.platform === "instagram") ? (
-            <a href={href} target="_blank" rel="noopener noreferrer" className="text-accent underline underline-offset-2">
-              {creator.channel_display_url}
-            </a>
-          ) : (
-            <span className="text-slate-500">{creator.channel_url || NA}</span>
-          )}
-        </Row>
-        <Row label="Account access">{creator.account_access ? ACCESS_LABELS[creator.account_access] ?? humanize(creator.account_access) : NA}</Row>
-      </Section>
+      {/* Two independent columns: each card keeps its natural height, so short cards leave no gaps. */}
+      <div className="grid items-start gap-5 lg:grid-cols-2">
+        <div className="space-y-5">
+          <ProfileCard creator={creator} />
 
-      <Section title="Audience & Performance">
-        <Row label={audienceLabel} hint={provenance.audience_count && `Source: ${sourceLabel(provenance.audience_count)}`}>
-          {creator.audience_count === null ? NA : `${formatCompact(creator.audience_count)} (${formatNumber(creator.audience_count)})`}
-        </Row>
-        <Row label="Average views" hint={provenance.average_views && `Source: ${sourceLabel(provenance.average_views)}`}>
-          {formatCompact(creator.average_views)}
-          {creator.median_views !== null && <span className="text-muted"> · median {formatCompact(creator.median_views)}</span>}
-        </Row>
-        {creator.platform === "youtube" && (creator.average_views_long !== null || creator.average_views_short !== null) && (
-          <>
-            <Row label="Long-form avg" hint="Videos longer than 3 minutes">
-              {creator.average_views_long === null
-                ? "No long-form videos in the sample"
-                : `${formatCompact(creator.average_views_long)} · ${creator.average_views_long_count} videos`}
+          <Section title="Content Analysis (AI)">
+            <Row label="Genre">
+              {creator.genre ?? NA}
+              {creator.genre_needs_review && <span className="ml-2 text-xs font-medium text-amber-700">Needs review</span>}
             </Row>
-            <Row label="Short-form avg" hint="Videos up to 3 minutes (includes Shorts)">
-              {creator.average_views_short === null
-                ? "No short-form videos in the sample"
-                : `${formatCompact(creator.average_views_short)} · ${creator.average_views_short_count} videos`}
+            <Row label="Sub-genre">{creator.sub_genre ?? NA}</Row>
+            <Row label="Language">{creator.language ?? NA}</Row>
+            <Row label="Secondary language">{creator.secondary_language ?? NA}</Row>
+            <Row label="Sentiment">
+              <SentimentBadge sentiment={creator.sentiment} />
+              {creator.sentiment_score !== null && <span className="ml-2 text-muted">score {creator.sentiment_score.toFixed(2)}</span>}
             </Row>
-          </>
-        )}
-        <Row label="Top performing video" hint={provenance.top_video && `Source: ${sourceLabel(provenance.top_video)}`}>
-          {videoHref && creator.top_video_views !== null ? (
-            <>
-              <a href={videoHref} target="_blank" rel="noopener noreferrer" className="font-medium text-accent hover:underline">
-                {creator.top_video_title || "Untitled"}
-              </a>
-              <div className="text-muted">{formatNumber(creator.top_video_views)} views</div>
-            </>
-          ) : (
-            NA
-          )}
-        </Row>
-        <Row label="Engagement rate" hint={provenance.engagement_rate && `Formula: ${sourceLabel(provenance.engagement_rate)}`}>
-          {formatPercent(creator.engagement_rate, 2)}
-          {creator.engagement_rate_basis && <span className="text-muted"> · based on {creator.engagement_rate_basis}</span>}
-        </Row>
-      </Section>
+            <Row label="Analysis confidence">
+              Genre {formatConfidence(creator.genre_confidence)} · Language {formatConfidence(creator.language_confidence)} · Sentiment{" "}
+              {formatConfidence(creator.sentiment_confidence)}
+            </Row>
+            {creator.evidence_topics && creator.evidence_topics.length > 0 && (
+              <Row label="Observed topics">
+                <div className="flex flex-wrap gap-1.5">
+                  {creator.evidence_topics.map((topic) => (
+                    <span key={topic} className="rounded-md bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
+                      {topic}
+                    </span>
+                  ))}
+                </div>
+              </Row>
+            )}
+          </Section>
+        </div>
 
-      <Section title="Content Analysis (AI)">
-        <Row label="Genre">
-          {creator.genre ?? NA}
-          {creator.genre_needs_review && <span className="ml-2 text-xs font-medium text-amber-700">Needs review</span>}
-        </Row>
-        <Row label="Sub-genre">{creator.sub_genre ?? NA}</Row>
-        <Row label="Language">{creator.language ?? NA}</Row>
-        <Row label="Secondary language">{creator.secondary_language ?? NA}</Row>
-        <Row label="Sentiment">
-          <SentimentBadge sentiment={creator.sentiment} />
-          {creator.sentiment_score !== null && <span className="ml-2 text-muted">score {creator.sentiment_score.toFixed(2)}</span>}
-        </Row>
-        <Row label="Analysis confidence">
-          Genre {formatConfidence(creator.genre_confidence)} · Language {formatConfidence(creator.language_confidence)} · Sentiment{" "}
-          {formatConfidence(creator.sentiment_confidence)}
-        </Row>
-        {creator.evidence_topics && creator.evidence_topics.length > 0 && (
-          <Row label="Observed topics">
-            <div className="flex flex-wrap gap-1.5">
-              {creator.evidence_topics.map((topic) => (
-                <span key={topic} className="rounded-md bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
-                  {topic}
-                </span>
-              ))}
-            </div>
-          </Row>
-        )}
-      </Section>
+        <div className="space-y-5">
+          <Section title="Audience & Performance">
+            <Row label={audienceLabel} hint={provenance.audience_count && `Source: ${sourceLabel(provenance.audience_count)}`}>
+              {creator.audience_count === null ? NA : `${formatCompact(creator.audience_count)} (${formatNumber(creator.audience_count)})`}
+            </Row>
+            <Row label="Average views" hint={provenance.average_views && `Source: ${sourceLabel(provenance.average_views)}`}>
+              {formatCompact(creator.average_views)}
+              {creator.median_views !== null && <span className="text-muted"> · median {formatCompact(creator.median_views)}</span>}
+            </Row>
+            {creator.platform === "youtube" && (creator.average_views_long !== null || creator.average_views_short !== null) && (
+              <>
+                <Row label="Long-form avg" hint="Videos longer than 3 minutes">
+                  {creator.average_views_long === null
+                    ? "No long-form videos in the sample"
+                    : `${formatCompact(creator.average_views_long)} · ${creator.average_views_long_count} videos`}
+                </Row>
+                <Row label="Short-form avg" hint="Videos up to 3 minutes (includes Shorts)">
+                  {creator.average_views_short === null
+                    ? "No short-form videos in the sample"
+                    : `${formatCompact(creator.average_views_short)} · ${creator.average_views_short_count} videos`}
+                </Row>
+              </>
+            )}
+            <Row label="Top performing video" hint={provenance.top_video && `Source: ${sourceLabel(provenance.top_video)}`}>
+              {videoHref && creator.top_video_views !== null ? (
+                <>
+                  <a href={videoHref} target="_blank" rel="noopener noreferrer" className="font-medium text-accent hover:underline">
+                    {creator.top_video_title || "Untitled"}
+                  </a>
+                  <div className="text-muted">{formatNumber(creator.top_video_views)} views</div>
+                </>
+              ) : (
+                NA
+              )}
+            </Row>
+            <Row label="Engagement rate" hint={provenance.engagement_rate && `Formula: ${sourceLabel(provenance.engagement_rate)}`}>
+              {formatPercent(creator.engagement_rate, 2)}
+              {creator.engagement_rate_basis && <span className="text-muted"> · based on {creator.engagement_rate_basis}</span>}
+            </Row>
+          </Section>
 
-      <Section title="Processing">
-        <Row label="Status">
-          <StatusBadge status={creator.status} />
-        </Row>
-        {creator.error_message && <Row label="Message">{creator.error_message}</Row>}
-        <Row label="Data source">{sourceLabel(provenance.audience_count) ?? (creator.data_fetched_at ? "Platform API" : NA)}</Row>
-        <Row label="AI model">{provenance.genre?.replace("llm_analysis:", "").replace("groq:", "Groq · ") ?? NA}</Row>
-        <Row label="Data fetched">{formatDateTime(creator.data_fetched_at)}</Row>
-        <Row label="Analyzed">{formatDateTime(creator.analyzed_at)}</Row>
-        <Row label="Last updated">{formatDateTime(creator.updated_at)}</Row>
-      </Section>
+          <Section title="Processing">
+            <Row label="Status">
+              <StatusBadge status={creator.status} />
+            </Row>
+            {creator.error_message && <Row label="Message">{creator.error_message}</Row>}
+            <Row label="Data source">{sourceLabel(provenance.audience_count) ?? (creator.data_fetched_at ? "Platform API" : NA)}</Row>
+            <Row label="AI model">{provenance.genre?.replace("llm_analysis:", "").replace("groq:", "Groq · ") ?? NA}</Row>
+            <Row label="Data fetched">{formatDateTime(creator.data_fetched_at)}</Row>
+            <Row label="Analyzed">{formatDateTime(creator.analyzed_at)}</Row>
+            <Row label="Last updated">{formatDateTime(creator.updated_at)}</Row>
+          </Section>
+        </div>
+      </div>
     </div>
   );
 }

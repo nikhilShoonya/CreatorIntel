@@ -89,7 +89,7 @@ def test_video_performance_rows_cleanup_and_export(client):
     assert data["rows"][0]["creator_name"] == "Broken" and data["rows"][0]["status"] == "invalid"
     assert client.get(f"/api/video-performance/uploads/{upload_id}/rows/export", params={"format": "csv"}).status_code == 200
 
-    export = client.get("/api/video-performance/exports/excel")
+    export = client.get("/api/video-performance/exports/excel", params={"layout": "performance"})
     assert export.status_code == 200
     frame = pd.read_excel(io.BytesIO(export.content))
     assert "Current Views" in frame.columns and "Views Gained" in frame.columns

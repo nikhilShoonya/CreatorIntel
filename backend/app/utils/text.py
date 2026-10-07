@@ -46,6 +46,6 @@ def caption_title(caption: str | None, limit: int = 70) -> str | None:
 
 def sanitize_spreadsheet_cell(value: object) -> object:
     """Neutralise formula injection when exporting user-controlled strings to CSV/Excel."""
-    if isinstance(value, str) and value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
+    if isinstance(value, str) and value != "-" and value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
         return "'" + value
     return value

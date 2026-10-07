@@ -30,7 +30,7 @@ _RATE_LIMIT_CODES = {4, 17, 32, 613, 80001, 80002}
 _PERMISSION_CODES = {10, 200, 3}
 _NOT_PROFESSIONAL_SUBCODE = 2207013
 
-_PROFILE_FIELDS = "id,username,name,biography,website,followers_count,media_count"
+_PROFILE_FIELDS = "id,username,name,biography,website,followers_count,media_count,profile_picture_url"
 _MEDIA_FIELDS = "id,caption,media_type,media_product_type,permalink,timestamp,like_count,comments_count"
 _VIEW_FIELD = "view_count"
 
@@ -235,6 +235,7 @@ class InstagramCollector:
             display_name=profile.get("name") or profile.get("username"),
             bio=profile.get("biography"),
             website=profile.get("website"),
+            profile_picture_url=profile.get("profile_picture_url") or None,
             audience_count=followers,
             account_access="professional_account",
             items=items,

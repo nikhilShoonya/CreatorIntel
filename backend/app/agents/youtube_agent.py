@@ -229,6 +229,12 @@ class YouTubeCollector:
 
         snippet = channel.get("snippet") or {}
         stats = channel.get("statistics") or {}
+        thumbs = snippet.get("thumbnails") or {}
+        avatar = next(
+            (str(thumbs[size]["url"]) for size in ("medium", "high", "default")
+             if isinstance(thumbs.get(size), dict) and thumbs[size].get("url")),
+            None,
+        )
         uploads = ((channel.get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads")
 
         notes: list[str] = []
@@ -261,6 +267,7 @@ class YouTubeCollector:
             bio=snippet.get("description"),
             audience_count=subscribers,
             account_access="public_channel",
+            profile_picture_url=avatar,
             items=videos,
             source=self.source,
             notes=notes,

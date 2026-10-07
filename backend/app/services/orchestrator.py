@@ -34,7 +34,7 @@ logger = logging.getLogger("creatorintel.orchestrator")
 
 # Fields rewritten on every full enrichment (so stale values are never mixed with new ones)
 _ENRICHED_FIELDS = (
-    "platform_id", "platform_display_name", "account_access", "followers_count", "subscriber_count",
+    "platform_id", "platform_display_name", "account_access", "profile_picture_url", "followers_count", "subscriber_count",
     "average_views", "average_views_sample_count", "median_views", "average_views_long", "average_views_long_count",
     "average_views_short", "average_views_short_count", "top_video_title", "top_video_url",
     "top_video_views", "engagement_rate", "engagement_rate_basis", "engagement_sample_count",
@@ -330,6 +330,7 @@ class EnrichmentOrchestrator:
             "platform_id": profile.platform_id,
             "platform_display_name": profile.display_name,
             "account_access": profile.account_access,
+            "profile_picture_url": profile.profile_picture_url,
             "subscriber_count": metrics.audience_count if profile.platform == "youtube" else None,
             "followers_count": metrics.audience_count if profile.platform == "instagram" else None,
             "average_views": metrics.average_views,

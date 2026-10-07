@@ -20,7 +20,7 @@ logger = logging.getLogger("creatorintel.creators")
 
 # Everything the pipeline produces; reset when a creator's identity (link) changes.
 PIPELINE_FIELDS = (
-    "platform_id", "platform_display_name", "account_access", "followers_count", "subscriber_count",
+    "platform_id", "platform_display_name", "account_access", "profile_picture_url", "followers_count", "subscriber_count",
     "average_views", "average_views_sample_count", "median_views", "average_views_long", "average_views_long_count",
     "average_views_short", "average_views_short_count", "top_video_title", "top_video_url",
     "top_video_views", "engagement_rate", "engagement_rate_basis", "engagement_sample_count",

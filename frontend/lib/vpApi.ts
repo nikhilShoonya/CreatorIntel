@@ -55,8 +55,11 @@ export const vpApi = {
   uploadRows: (id: string) => request<{ upload: VpUpload; rows: VpUploadRow[] }>(`${BASE}/uploads/${encodeURIComponent(id)}/rows`),
   downloadUploadRows: (id: string, format: "excel" | "csv") =>
     downloadFile(`${BASE}/uploads/${encodeURIComponent(id)}/rows/export?format=${format}`, `video_rows.${format === "excel" ? "xlsx" : "csv"}`),
-  exportVideos: (kind: "excel" | "csv", filters: VpFilters) =>
-    downloadFile(`${BASE}/exports/${kind}${toQuery({ ...filters })}`, `video_performance.${kind === "excel" ? "xlsx" : "csv"}`),
+  exportVideos: (kind: "excel" | "csv", filters: VpFilters, layout: "performance" | "upload" = "performance") =>
+    downloadFile(
+      `${BASE}/exports/${kind}${toQuery({ ...filters, layout })}`,
+      `${layout === "upload" ? "video_list_upload_ready" : "video_performance"}.${kind === "excel" ? "xlsx" : "csv"}`,
+    ),
 
   async upload(file: File): Promise<VpUploadResult> {
     const body = new FormData();

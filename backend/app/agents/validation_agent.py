@@ -54,6 +54,9 @@ class ResultValidator:
             issues.append("Channel URL does not match the platform")
         if not v.get("platform_id"):
             issues.append("Creator identity could not be confirmed by the platform API")
+        avatar = v.get("profile_picture_url")
+        if avatar is not None and not (isinstance(avatar, str) and urlsplit(avatar).scheme == "https"):
+            v["profile_picture_url"] = None  # cosmetic only, so not reported as an issue
 
         for key in ("followers_count", "subscriber_count"):
             if v.get(key) is not None and not _is_count(v[key]):

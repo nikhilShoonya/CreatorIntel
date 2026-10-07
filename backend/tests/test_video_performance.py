@@ -4,6 +4,7 @@ External HTTP is served by in-test fakes (httpx.MockTransport). Views change bet
 "days" so growth numbers can be verified exactly.
 """
 
+import csv
 import io
 import json
 import time
@@ -13,6 +14,7 @@ import httpx
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 from sqlalchemy import select
 
 from app.config.settings import get_settings
@@ -157,6 +159,59 @@ def test_full_video_tracking_flow(api):
     assert yt["sentiment"] == "Positive"
     assert ig["status"] == "Tracking" and ig["current_views"] == 1000 and ig["engagement_rate"] == 10.0
     assert unknown["status"] == "Unsupported" and "username" in unknown["status_reason"]
+
+    # The import-ready exports have the same four columns in both formats.
+    csv_export = api.get("/api/video-performance/exports/csv", params={"layout": "upload"})
+    excel_export = api.get("/api/video-performance/exports/excel", params={"layout": "upload"})
+    assert csv_export.status_code == excel_export.status_code == 200
+    csv_rows = list(csv.reader(io.StringIO(csv_export.content.decode("utf-8-sig"))))
+    workbook = load_workbook(io.BytesIO(excel_export.content))
+    sheet = workbook.active
+    excel_rows = [[value if value is not None else "" for value in row] for row in sheet.values]
+    assert csv_rows[0] == excel_rows[0] == ["Video Link", "Creator Name", "Platform", "Username"]
+    assert sorted(csv_rows[1:]) == sorted(excel_rows[1:])
+    assert any(row[0].endswith("/Cabc12345/") and row[3] == "tradingtech31" for row in csv_rows[1:])
+    assert all(row[3] == "" for row in csv_rows[1:] if row[2] == "YouTube")
+    assert sheet["A1"].fill.fgColor.rgb == "00394692"
+    assert sheet.freeze_panes == "A2"
+    assert sheet.max_column == 4
+    assert sheet.column_dimensions["A"].width >= 58
+    assert sheet.column_dimensions["B"].width >= 28
+    assert sheet.row_dimensions[2].height >= 50
+    assert sheet.auto_filter.ref == f"A1:D{sheet.max_row}"
+    assert sheet["A2"].hyperlink is not None
+    assert sheet["A2"].hyperlink.target == sheet["A2"].value
+    ig_row = next(row for row in sheet.iter_rows(min_row=2) if row[2].value == "Instagram" and row[3].value)
+    assert ig_row[3].font.color.rgb == "00007A4D"
+
+    report = api.get("/api/video-performance/exports/excel")
+    report_csv = api.get("/api/video-performance/exports/csv")
+    assert report.status_code == report_csv.status_code == 200
+    report_sheet = load_workbook(io.BytesIO(report.content)).active
+    report_csv_rows = list(csv.reader(io.StringIO(report_csv.content.decode("utf-8-sig"))))
+    report_excel_rows = [[value if value is not None else "" for value in row] for row in report_sheet.values]
+    assert report_csv_rows[0] == report_excel_rows[0]
+    assert len(report_csv_rows) == len(report_excel_rows) == len(csv_rows)
+    assert sorted((row[1], row[13]) for row in report_csv_rows[1:]) == sorted(
+        (row[1], row[13]) for row in report_excel_rows[1:]
+    )
+    assert report_sheet.max_column == 18
+    assert report_sheet["E1"].value == "Current Views"
+    assert report_sheet["A1"].fill.fgColor.rgb == "00394692"
+    assert report_sheet.freeze_panes == "A2"
+    assert report_sheet.auto_filter.ref == f"A1:R{report_sheet.max_row}"
+    assert report_sheet.row_dimensions[2].height >= 50
+    assert report_sheet.column_dimensions["B"].width >= 58
+    assert report_sheet.column_dimensions["P"].width >= 22
+    assert report_sheet["B2"].hyperlink.target == report_sheet["B2"].value
+    assert all(value != "" for row in report_csv_rows[1:] for value in row)
+    assert all(value != "" for row in report_excel_rows[1:] for value in row)
+    unsupported_csv = next(row for row in report_csv_rows[1:] if "/Cnoowner1/" in row[1])
+    unsupported_excel = next(row for row in report_excel_rows[1:] if "/Cnoowner1/" in row[1])
+    for row in (unsupported_csv, unsupported_excel):
+        assert row[4] == "N/A"  # current views
+        assert row[5:8] == ["-", "-", "-"]  # previous views and growth
+        assert row[11] == "N/A"  # sentiment
 
     # re-upload of the same video is not duplicated
     again = api.post(
