@@ -8,7 +8,7 @@ from sqlalchemy import Select, case, func, or_, select
 from app.models.entities import Creator, UploadItem
 
 SortKey = Literal[
-    "audience", "average_views", "engagement_rate", "genre", "sentiment", "channel_name", "updated_at", "position"
+    "audience", "average_views", "engagement_rate", "genre", "sentiment", "channel_name", "updated_at", "position", "data_fetched_at"
 ]
 
 
@@ -75,6 +75,7 @@ def build_creator_query(filters: CreatorFilters) -> Select:
         "sentiment": _SENTIMENT_ORDER,
         "channel_name": func.lower(Creator.channel_name),
         "updated_at": Creator.updated_at,
+        "data_fetched_at": Creator.data_fetched_at,
     }
 
     sort_by = filters.sort_by

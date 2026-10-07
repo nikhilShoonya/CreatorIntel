@@ -77,7 +77,7 @@ export function CreatorDetailsPanel({ creatorId, onClose, onAction, onEdit, onDe
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <StatusBadge status={creator.status} />
-                <span className="text-xs text-muted">Last updated {formatDateTime(creator.updated_at)}</span>
+                <span className="text-xs text-muted">Last updated {formatDateTime(creator.data_fetched_at ?? creator.updated_at)}</span>
               </div>
             </div>
           ) : (

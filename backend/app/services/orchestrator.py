@@ -87,6 +87,11 @@ class EnrichmentOrchestrator:
         self._locks: dict[int, asyncio.Lock] = {}
         self._identity_locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task] = set()
+        # Progress of the "Refresh data" bulk job on the creator list (one at a time).
+        self._bulk_running = False
+        self._bulk_total = 0
+        self._bulk_done = 0
+        self._bulk_finished_at: datetime | None = None
 
     # ---------------------------------------------------------------- scheduling
     def _schedule(self, coro: Coroutine[Any, Any, Any], name: str) -> None:
@@ -106,6 +111,47 @@ class EnrichmentOrchestrator:
     async def _limited(self, coro: Coroutine[Any, Any, Any]) -> Any:
         async with self._semaphore:
             return await coro
+
+    # ------------------------------------------------------------- bulk refresh
+    @property
+    def bulk_refresh_running(self) -> bool:
+        return self._bulk_running
+
+    def bulk_refresh_status(self) -> dict:
+        return {
+            "running": self._bulk_running,
+            "progress_total": self._bulk_total,
+            "progress_done": self._bulk_done,
+            "finished_at": self._bulk_finished_at,
+        }
+
+    def start_refresh_all(self, creator_ids: list[int]) -> None:
+        """Re-fetch fresh data for many creators in the background (tracked for the progress bar)."""
+        self._bulk_running = True
+        self._bulk_total = len(creator_ids)
+        self._bulk_done = 0
+        self._schedule(self._refresh_all(creator_ids), "refresh-all-creators")
+
+    async def _refresh_all(self, creator_ids: list[int]) -> None:
+        started = time.perf_counter()
+        log_event(logger, logging.INFO, "bulk_refresh_started", queued=len(creator_ids))
+
+        async def run(creator_id: int) -> None:
+            try:
+                async with self._semaphore:
+                    await self.enrich_creator(creator_id)
+            finally:
+                self._bulk_done += 1
+
+        try:
+            await asyncio.gather(*(run(cid) for cid in creator_ids), return_exceptions=True)
+        finally:
+            self._bulk_running = False
+            self._bulk_finished_at = utcnow()
+            log_event(
+                logger, logging.INFO, "bulk_refresh_finished",
+                total=self._bulk_total, duration_s=f"{time.perf_counter() - started:.1f}",
+            )
 
     async def shutdown(self) -> None:
         for task in list(self._tasks):

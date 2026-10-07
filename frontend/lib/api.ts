@@ -87,6 +87,14 @@ export interface DeleteResult {
   message: string;
 }
 
+export interface CreatorRefreshStatus {
+  running: boolean;
+  progress_total: number;
+  progress_done: number;
+  finished_at: string | null;
+  message?: string;
+}
+
 export const api = {
   uploadFile(file: File): Promise<UploadDetail> {
     const body = new FormData();
@@ -104,6 +112,8 @@ export const api = {
   retry: (id: number) => request<{ message: string }>(`/api/creators/${id}/retry`, { method: "POST" }),
   reanalyze: (id: number) => request<{ message: string }>(`/api/creators/${id}/reanalyze`, { method: "POST" }),
   configStatus: () => request<ConfigStatus>("/api/config/status"),
+  refreshAllCreators: () => request<CreatorRefreshStatus>("/api/creators/refresh-all", { method: "POST" }),
+  creatorRefreshStatus: () => request<CreatorRefreshStatus>("/api/creators/refresh-status"),
 
   // CRUD
   createCreator: (input: { channel_name: string; channel_link: string; upload_id?: string }) =>

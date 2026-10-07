@@ -46,6 +46,7 @@ class CreatorOut(BaseModel):
 
     status: str
     error_message: str | None
+    data_fetched_at: UTCDateTime | None
     updated_at: UTCDateTime
 
     @computed_field  # type: ignore[prop-decorator]
@@ -76,7 +77,6 @@ class CreatorDetailOut(CreatorOut):
     evidence_topics: list[str] | None
     issues: list[str] | None
     provenance: dict[str, str] | None
-    data_fetched_at: UTCDateTime | None
     analyzed_at: UTCDateTime | None
     created_at: UTCDateTime
 

@@ -11,6 +11,7 @@ import { useDebounce } from "@/hooks/useDebounce";
 import { api } from "@/lib/api";
 import { formatCompact, platformLabel } from "@/lib/format";
 import type { Creator, CreatorFilters, SortDir, SortKey } from "@/types";
+import { formatChecked } from "../video-performance/format";
 import { ChannelLinkCell, EngagementCell, GenreCell, NA_CELL, PlatformCell, TopVideoCell } from "./cells";
 import { CreatorDetailsPanel } from "./CreatorDetailsPanel";
 import { CreatorFormDialog } from "./CreatorFormDialog";
@@ -285,6 +286,7 @@ export function CreatorsTable({ title, uploadId, initialQuery = "", refreshToken
                 <SortTh label="Genre" sortKey="genre" sort={sort} onSort={toggleSort} />
                 <Th>Language</Th>
                 <SortTh label="Sentiment" sortKey="sentiment" sort={sort} onSort={toggleSort} />
+                <SortTh label="Last Checked" sortKey="data_fetched_at" sort={sort} onSort={toggleSort} align="left" />
                 <Th>Status</Th>
                 <Th className="text-right">Actions</Th>
               </tr>
@@ -328,6 +330,7 @@ export function CreatorsTable({ title, uploadId, initialQuery = "", refreshToken
           try {
             const result = kind === "retry" ? await api.retry(id) : await api.reanalyze(id);
             showToast({ tone: "success", message: result.message });
+            setLocalRefresh((n) => n + 1);
           } catch (err) {
             showToast({ tone: "error", message: err instanceof Error ? err.message : "Action failed" });
           }
@@ -459,6 +462,9 @@ function CreatorRow({
       <td className={`${td} group-hover:bg-slate-50`}>
         <SentimentBadge sentiment={creator.sentiment} />
       </td>
+      <td className={`${td} whitespace-nowrap text-slate-600 group-hover:bg-slate-50`}>
+        {formatChecked(creator.data_fetched_at)}
+      </td>
       <td className={`${td} group-hover:bg-slate-50`}>
         <StatusBadge status={creator.status} title={creator.error_message} />
       </td>
@@ -472,7 +478,7 @@ function CreatorRow({
 function SkeletonRow() {
   return (
     <tr>
-      {Array.from({ length: 14 }, (_, i) => (
+      {Array.from({ length: 15 }, (_, i) => (
         <td key={i} className={td}>
           <div className="h-4 animate-pulse rounded bg-slate-100" />
         </td>

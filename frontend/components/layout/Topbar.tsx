@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Check, Loader2, RefreshCw, Search } from "lucide-react";
 
 import { Dialog } from "@/components/ui/Dialog";
 
 import { refreshAllData, useApi } from "@/hooks/useApi";
 import { useStoredValue } from "@/hooks/useStoredValue";
+import { api } from "@/lib/api";
 import { initials } from "@/lib/format";
 import { vpApi } from "@/lib/vpApi";
 
@@ -62,36 +63,63 @@ function RefreshDataButton() {
   const { data: jobs } = useApi("topbar-jobs", () => vpApi.jobs(), {
     refreshMs: (d) => (d?.some((j) => j.running) ? 4000 : false),
   });
+  // Background re-fetch of every creator on the creator list (started by this button).
+  const { data: creatorJob } = useApi("topbar-creator-refresh", () => api.creatorRefreshStatus(), {
+    refreshMs: (d) => (d?.running ? 3000 : false),
+  });
+
+  const isVideoPage = pathname.includes("/video-performance");
+  const isCreatorPage = pathname.startsWith("/creators");
 
   const runningJob = jobs?.find((j) => j.running);
+  const creatorRunning = !!creatorJob?.running;
   let progressText = "Refreshing…";
-  if (runningJob && typeof runningJob.progress_done === "number" && typeof runningJob.progress_total === "number" && runningJob.progress_total > 0) {
+  if (creatorRunning && creatorJob.progress_total > 0) {
+    const percent = Math.round((creatorJob.progress_done / creatorJob.progress_total) * 100);
+    progressText = `Refreshing… ${creatorJob.progress_done}/${creatorJob.progress_total} creators (${percent}%)`;
+  } else if (runningJob && typeof runningJob.progress_done === "number" && typeof runningJob.progress_total === "number" && runningJob.progress_total > 0) {
     const percent = Math.round((runningJob.progress_done / runningJob.progress_total) * 100);
     progressText = `Refreshing… ${percent}%`;
   }
 
-  const isBusy = clickBusy || !!runningJob;
+  const isBusy = clickBusy || !!runningJob || creatorRunning;
   const state = isBusy ? "busy" : updatedAt ? "done" : "idle";
+
+  function markUpdated() {
+    setUpdatedAt(new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }));
+    window.setTimeout(() => setUpdatedAt(null), 2000);
+  }
+
+  // When the background creator refresh finishes, reload the table so the new numbers show up.
+  const wasCreatorRunning = useRef(false);
+  useEffect(() => {
+    if (wasCreatorRunning.current && !creatorRunning) {
+      void refreshAllData().then(markUpdated);
+    }
+    wasCreatorRunning.current = creatorRunning;
+  }, [creatorRunning]);
 
   async function onClick() {
     setClickBusy(true);
-    if (pathname.includes("/video-performance")) {
+    if (isVideoPage) {
       try {
         await vpApi.runJob("metrics_refresh");
       } catch (e) {
         console.error("Failed to start metrics_refresh job", e);
       }
+    } else if (isCreatorPage) {
+      try {
+        await api.refreshAllCreators();
+      } catch (e) {
+        console.error("Failed to start creator refresh", e);
+      }
     }
     await refreshAllData();
-    setUpdatedAt(new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }));
     setClickBusy(false);
-    window.setTimeout(() => {
-      setUpdatedAt(null);
-    }, 2000);
+    markUpdated();
   }
 
-  const isVideoPage = pathname.includes("/video-performance");
-  const loadingTitle = isVideoPage ? "Refreshing Tracking Videos…" : "Refreshing Creator List…";
+  const loadingTitle = creatorRunning || !isVideoPage ? "Refreshing Creator List…" : "Refreshing Tracking Videos…";
 
   return (
     <>
@@ -111,7 +139,7 @@ function RefreshDataButton() {
         <span className="hidden md:inline">{state === "done" ? "Updated" : "Refresh data"}</span>
       </button>
 
-      <Dialog open={state === "busy"} title={loadingTitle} onClose={() => {}} size="sm">
+      <Dialog open={state === "busy"} title={loadingTitle} onClose={() => { }} size="sm">
         <div className="flex flex-col items-center justify-center py-10">
           <Loader2 size={36} className="animate-spin text-accent mb-6" />
           <p className="text-base text-slate-700 font-medium">

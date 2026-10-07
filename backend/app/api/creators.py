@@ -2,7 +2,7 @@ import math
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, defer
 
@@ -89,6 +89,45 @@ def creator_facets(
     return FacetsResponse(
         platforms=platforms, genres=genres, languages=languages, sentiments=sentiments, statuses=statuses
     )
+
+
+@router.post("/refresh-all", status_code=202)
+async def refresh_all_creators(
+    db: Session = Depends(get_db),
+    orchestrator: EnrichmentOrchestrator = Depends(get_orchestrator),
+):
+    """Re-fetch fresh platform data for every creator with a valid link (runs in the background)."""
+    if orchestrator.bulk_refresh_running:
+        return {"message": "A refresh is already running", **orchestrator.bulk_refresh_status()}
+
+    def queue() -> list[int]:
+        ids = list(
+            db.scalars(
+                select(Creator.id).where(
+                    Creator.platform.in_(("youtube", "instagram")),
+                    Creator.status.not_in(CreatorStatus.ACTIVE),
+                )
+            )
+        )
+        if ids:
+            db.execute(
+                update(Creator)
+                .where(Creator.id.in_(ids))
+                .values(status=CreatorStatus.PENDING)
+                .execution_options(synchronize_session=False)
+            )
+            db.commit()
+        return ids
+
+    creator_ids = await run_in_threadpool(queue)
+    if creator_ids:
+        orchestrator.start_refresh_all(creator_ids)
+    return {"message": f"Refreshing {len(creator_ids)} creators", **orchestrator.bulk_refresh_status()}
+
+
+@router.get("/refresh-status")
+def refresh_status(orchestrator: EnrichmentOrchestrator = Depends(get_orchestrator)):
+    return orchestrator.bulk_refresh_status()
 
 
 def _get_creator(db: Session, creator_id: int) -> Creator:

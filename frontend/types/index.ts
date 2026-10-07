@@ -4,7 +4,7 @@ export type CreatorStatus = "Pending" | "Processing" | "Completed" | "Partial" |
 
 export type UploadStatus = "validating" | "processing" | "completed" | "failed";
 
-export type SortKey = "audience" | "average_views" | "engagement_rate" | "genre" | "sentiment";
+export type SortKey = "audience" | "average_views" | "engagement_rate" | "genre" | "sentiment" | "data_fetched_at";
 
 export type SortDir = "asc" | "desc";
 
@@ -37,6 +37,7 @@ export interface Creator {
   sentiment: string | null;
   status: CreatorStatus;
   error_message: string | null;
+  data_fetched_at: string | null;
   updated_at: string;
 }
 
@@ -55,7 +56,6 @@ export interface CreatorDetail extends Creator {
   evidence_topics: string[] | null;
   issues: string[] | null;
   provenance: Record<string, string> | null;
-  data_fetched_at: string | null;
   analyzed_at: string | null;
   created_at: string;
 }
