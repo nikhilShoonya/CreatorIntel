@@ -133,9 +133,12 @@ class Settings(BaseSettings):
 
     @property
     def groq_api_keys(self) -> list[str]:
-        numbered = [k.strip() for k in (self.groq_api_key_1, self.groq_api_key_2, self.groq_api_key_3) if k.strip()]
-        keys = numbered or ([self.groq_api_key.strip()] if self.groq_api_key.strip() else [])
-        return list(dict.fromkeys(keys))
+        def split(value: str) -> list[str]:
+            # GROQ_API_KEY may also hold several keys separated by commas (like YOUTUBE_API_KEY).
+            return [k.strip().strip("\"'") for k in re.split(r"[,;\s]+", value or "") if k.strip().strip("\"'")]
+
+        numbered = [k for value in (self.groq_api_key_1, self.groq_api_key_2, self.groq_api_key_3) for k in split(value)]
+        return list(dict.fromkeys(numbered or split(self.groq_api_key)))
 
     @property
     def groq_models(self) -> list[str]:

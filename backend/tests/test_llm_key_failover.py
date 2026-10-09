@@ -94,6 +94,8 @@ def test_keys_are_read_in_order_with_single_key_fallback():
     assert cfg.model_copy(update={"groq_api_key_1": "a", "groq_api_key_2": "a"}).groq_api_keys == ["a"]  # duplicates once
     assert cfg.model_copy(update={"groq_api_key": "single", "groq_api_key_1": "", "groq_api_key_2": "",
                                   "groq_api_key_3": ""}).groq_api_keys == ["single"]  # existing GROQ_API_KEY still works
+    assert cfg.model_copy(update={"groq_api_key": "k1, k2,k3", "groq_api_key_1": "", "groq_api_key_2": "",
+                                  "groq_api_key_3": ""}).groq_api_keys == ["k1", "k2", "k3"]  # comma-separated list
     assert cfg.model_copy(update={"groq_api_key": "", "groq_api_key_1": "", "groq_api_key_2": "",
                                   "groq_api_key_3": ""}).ai_configured is False
 
