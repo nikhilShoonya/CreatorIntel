@@ -13,6 +13,7 @@ import httpx
 
 from app.config.settings import Settings, get_settings
 from app.schemas.platform import ChannelProfile, CollectionError, ContentItem
+from app.services import youtube_keys
 from app.services.api_usage import record_youtube_call, record_youtube_quota_exceeded
 from app.services.http_client import HttpRequestError, request_json
 from app.utils.logging import log_event
@@ -24,7 +25,6 @@ API_BASE = "https://www.googleapis.com/youtube/v3"
 _RATE_LIMIT_REASONS = {"rateLimitExceeded", "userRateLimitExceeded"}
 _QUOTA_REASONS = {"quotaExceeded", "dailyLimitExceeded"}
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
-_AUTH_REASONS = {"keyInvalid", "keyExpired", "accessNotConfigured", "forbidden", "ipRefererBlocked", "API_KEY_INVALID"}
 
 
 def _error_reasons(payload: Any) -> set[str]:
@@ -78,41 +78,36 @@ class YouTubeCollector:
     def __init__(self, settings: Settings | None = None, client: httpx.AsyncClient | None = None):
         self.settings = settings or get_settings()
         self.client = client
-        self._key_index = 0  # several keys may be configured; move to the next on quota / invalid key
-
-    @staticmethod
-    def _is_key_error(exc: HttpRequestError, reasons: set[str]) -> bool:
-        message = str(((exc.payload or {}).get("error") or {}).get("message", "")) if isinstance(exc.payload, dict) else ""
-        return bool(reasons & _AUTH_REASONS) or exc.status_code in (401, 403) or (
-            exc.status_code == 400 and "API key" in message
-        )
 
     async def _get(self, resource: str, params: dict[str, Any]) -> dict:
         keys = self.settings.youtube_api_keys
-        while True:
-            index = min(self._key_index, len(keys) - 1)
+        # Always start from the first usable key (a key skipped for quota is used again after the daily reset).
+        candidates = youtube_keys.usable(keys) or keys
+        for position, key in enumerate(candidates):
             try:
                 return await request_json(
                     "GET", f"{API_BASE}/{resource}",
                     service="YouTube API",
                     params=params,
-                    headers={"X-Goog-Api-Key": keys[index], "Accept": "application/json"},
+                    headers={"X-Goog-Api-Key": key, "Accept": "application/json"},
                     should_retry=_should_retry,
                     client=self.client,
-                    on_attempt=lambda key=keys[index]: record_youtube_call(key),
+                    on_attempt=lambda key=key: record_youtube_call(key),
                 )
             except HttpRequestError as exc:
                 reasons = _error_reasons(exc.payload)
                 quota = bool(reasons & _QUOTA_REASONS)
+                key_error = not quota and youtube_keys.is_key_problem(exc.status_code, exc.payload)
                 if quota:
-                    record_youtube_quota_exceeded(keys[index])
-                key_error = not quota and self._is_key_error(exc, reasons) and not (reasons & _RATE_LIMIT_REASONS)
-                if (quota or key_error) and index + 1 < len(keys):
-                    if self._key_index == index:
-                        self._key_index = index + 1
+                    record_youtube_quota_exceeded(key)
+                    youtube_keys.mark_quota_exhausted(key)
+                elif key_error:
+                    youtube_keys.mark_invalid(key)
+                if (quota or key_error) and position + 1 < len(candidates):
                     log_event(
                         logger, logging.WARNING, "youtube_key_switched",
-                        from_key=index + 1, to_key=index + 2, reason="quota_exceeded" if quota else "invalid_key",
+                        from_slot=f"#{keys.index(key) + 1}", to_slot=f"#{keys.index(candidates[position + 1]) + 1}",
+                        reason="quota_exceeded" if quota else "invalid_key",
                     )
                     continue
                 if quota:
@@ -126,7 +121,14 @@ class YouTubeCollector:
                     ) from exc
                 if exc.status_code == 404:
                     raise CollectionError(CollectionError.NOT_FOUND, "YouTube resource not found") from exc
+                if exc.status_code == 403:
+                    # About the requested channel / playlist (e.g. private), not the key.
+                    raise CollectionError(
+                        CollectionError.NOT_ACCESSIBLE,
+                        youtube_keys.error_message(exc.payload) or "YouTube resource is not accessible",
+                    ) from exc
                 raise CollectionError(CollectionError.API_ERROR, exc.message) from exc
+        raise CollectionError(CollectionError.CONFIG_MISSING, "YouTube API is not configured (YOUTUBE_API_KEY)")
 
     async def _channel_id_for_video(self, video_id: str) -> str:
         data = await self._get("videos", {"part": "snippet", "id": video_id, "maxResults": 1})
@@ -172,8 +174,8 @@ class YouTubeCollector:
                 },
             )
         except CollectionError as exc:
-            if exc.code == CollectionError.NOT_FOUND:
-                return []  # channel without public uploads
+            if exc.code in (CollectionError.NOT_FOUND, CollectionError.NOT_ACCESSIBLE):
+                return []  # channel without public uploads (missing or private uploads playlist)
             raise
         ids: list[str] = []
         for item in data.get("items") or []:

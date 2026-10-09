@@ -9,7 +9,7 @@ import { ConfirmDialog } from "@/components/ui/Dialog";
 import { useCreators, useFacets } from "@/hooks/useData";
 import { useDebounce } from "@/hooks/useDebounce";
 import { api } from "@/lib/api";
-import { formatCompact, platformLabel } from "@/lib/format";
+import { formatCompact, formatDateTime, platformLabel } from "@/lib/format";
 import type { Creator, CreatorFilters, SortDir, SortKey } from "@/types";
 import { formatChecked } from "../video-performance/format";
 import { ChannelLinkCell, EngagementCell, GenreCell, NA_CELL, PlatformCell, TopVideoCell } from "./cells";
@@ -462,8 +462,11 @@ function CreatorRow({
       <td className={`${td} group-hover:bg-slate-50`}>
         <SentimentBadge sentiment={creator.sentiment} />
       </td>
-      <td className={`${td} whitespace-nowrap text-slate-600 group-hover:bg-slate-50`}>
-        {formatChecked(creator.data_fetched_at)}
+      <td
+        className={`${td} whitespace-nowrap text-slate-600 group-hover:bg-slate-50`}
+        title={creator.data_fetched_at ? formatDateTime(creator.data_fetched_at) : undefined}
+      >
+        {formatChecked(creator.data_fetched_at, true)}
       </td>
       <td className={`${td} group-hover:bg-slate-50`}>
         <StatusBadge status={creator.status} title={creator.error_message} />

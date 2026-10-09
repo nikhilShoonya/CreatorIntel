@@ -5,6 +5,7 @@ Nothing here performs network requests (no SSRF surface).
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -22,7 +23,6 @@ _INSTAGRAM_RESERVED = {
 }
 _INSTAGRAM_USERNAME = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 
-_YOUTUBE_HANDLE = re.compile(r"^[A-Za-z0-9._\-·]{3,30}$")
 _YOUTUBE_CHANNEL_ID = re.compile(r"^UC[A-Za-z0-9_\-]{22}$")
 _YOUTUBE_VIDEO_ID = re.compile(r"^[A-Za-z0-9_\-]{11}$")
 _YOUTUBE_LEGACY_NAME = re.compile(r"^[A-Za-z0-9._\-]{1,100}$")
@@ -120,6 +120,14 @@ def _parse_instagram(segments: list[str]) -> ParsedLink:
     )
 
 
+def _valid_youtube_handle(handle: str) -> bool:
+    """YouTube handles are 3-30 characters: letters / digits in any script (with their combining marks,
+    e.g. Devanagari vowel signs), plus underscore, hyphen, period and middle dot."""
+    return 3 <= len(handle) <= 30 and all(
+        ch.isalnum() or ch in "._-·" or unicodedata.category(ch).startswith("M") for ch in handle
+    )
+
+
 def _youtube_video(video_id: str) -> ParsedLink:
     """A video link: the channel is resolved later through the API (videos.list -> channelId)."""
     if not _YOUTUBE_VIDEO_ID.match(video_id):
@@ -138,7 +146,7 @@ def _parse_youtube(segments: list[str], query: dict[str, list[str]] | None = Non
 
     if first.startswith("@"):
         handle = first[1:]
-        if not _YOUTUBE_HANDLE.match(handle):
+        if not _valid_youtube_handle(handle):
             return _invalid("YouTube handle in link is not valid")
         handle = handle.lower()
         return ParsedLink("youtube", handle, "handle", f"https://www.youtube.com/@{handle}")

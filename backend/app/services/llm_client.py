@@ -48,6 +48,7 @@ WINDOW_SECONDS = 60.0
 SAFETY = 0.9  # stay below the published per-minute limits
 MAX_MINUTE_WAITS = 4  # per-minute 429s waited out before giving up for now
 MAX_WAIT_SECONDS = 65.0
+MAX_TOTAL_WAIT_SECONDS = 120.0  # one request never waits longer than this in total; then the work is pending
 DAILY_THRESHOLD_SECONDS = 120.0  # a "try again in" longer than this means a daily limit
 KEY_COOLDOWN_SECONDS = 30 * 60  # an unusable key is skipped this long, then tried again
 
@@ -57,7 +58,7 @@ class LLMError(Exception):
         super().__init__(message)
         self.message = message
         self.retryable = retryable
-        self.quota = quota  # daily limit of every configured model reached - try again after retry_at
+        self.quota = quota  # Groq limits reached (daily, or busy too long) - the work is pending until retry_at
         self.retry_at = retry_at
 
 
@@ -80,6 +81,14 @@ class _RateLimited(Exception):
         super().__init__(f"rate limited ({'daily' if daily else 'per minute'}), retry in {wait:.0f}s")
         self.wait = wait
         self.daily = daily
+
+
+def _busy(wait: float) -> LLMError:
+    """Groq's per-minute limit kept the request waiting too long: mark the work pending (retried automatically)."""
+    return LLMError(
+        "Groq is busy (per-minute limit) - AI work is pending and will be retried automatically",
+        retryable=False, quota=True, retry_at=datetime.fromtimestamp(_now() + wait, timezone.utc),
+    )
 
 
 class _Budget:
@@ -238,13 +247,14 @@ class LLMClient:
         if not self.configured:
             raise LLMError("AI analysis is not configured (set GROQ_API_KEY_1 in backend/.env)", retryable=False)
         estimate = _estimate_tokens(system, user, schema)
+        deadline = _monotonic() + MAX_TOTAL_WAIT_SECONDS
         for _ in range(len(self.settings.groq_api_keys)):  # bounded: every key at most once per request
             active = self._active_key()
             if active is None:
                 break
             position, key = active
             try:
-                return await self._complete_with_key(key, estimate, system, user, schema_name, schema)
+                return await self._complete_with_key(key, estimate, system, user, schema_name, schema, deadline)
             except _KeyUnusable as exc:
                 self._disable(key, exc.reason)
                 log_event(logger, logging.WARNING, "llm_key_unusable", key_slot=f"#{position}", scope=exc.scope,
@@ -258,7 +268,7 @@ class LLMClient:
         )
 
     async def _complete_with_key(
-        self, key: str, estimate: int, system: str, user: str, schema_name: str, schema: dict
+        self, key: str, estimate: int, system: str, user: str, schema_name: str, schema: dict, deadline: float
     ) -> LLMResult:
         models = self.settings.groq_models
         for index, model in enumerate(models):
@@ -266,7 +276,7 @@ class LLMClient:
             if budget.exhausted_until > _now():
                 continue
             try:
-                return await self._complete_with(key, model, budget, estimate, system, user, schema_name, schema)
+                return await self._complete_with(key, model, budget, estimate, system, user, schema_name, schema, deadline)
             except _RateLimited as exc:  # daily limit of this model
                 budget.exhausted_until = _now() + exc.wait
                 log_event(logger, logging.WARNING, "llm_daily_limit", model=model, resets_in_s=f"{exc.wait:.0f}",
@@ -283,13 +293,21 @@ class LLMClient:
         )
 
     async def _complete_with(
-        self, key: str, model: str, budget: _Budget, estimate: int, system: str, user: str, schema_name: str, schema: dict
+        self, key: str, model: str, budget: _Budget, estimate: int, system: str, user: str, schema_name: str,
+        schema: dict, deadline: float,
     ) -> LLMResult:
         rpm, tpm = self.settings.groq_requests_per_minute, self.settings.groq_tokens_per_minute
+
+        async def wait_for(seconds: float) -> None:
+            seconds = min(seconds, MAX_WAIT_SECONDS)
+            if _monotonic() + seconds > deadline:  # waited long enough for this request
+                raise _busy(seconds)
+            await _sleep(seconds)
+
         for _ in range(MAX_MINUTE_WAITS + 1):
             wait, entry = budget.reserve(estimate, rpm, tpm)
             while entry is None:  # pace below the per-minute limits instead of hitting them
-                await _sleep(min(wait, MAX_WAIT_SECONDS))
+                await wait_for(wait)
                 wait, entry = budget.reserve(estimate, rpm, tpm)
             try:
                 result = await self._post(key, model, system, user, schema_name, schema)
@@ -299,11 +317,11 @@ class LLMClient:
                     raise
                 budget.penalize(exc.wait)
                 log_event(logger, logging.INFO, "llm_minute_limit_wait", model=model, wait_s=f"{exc.wait:.1f}")
-                await _sleep(min(exc.wait, MAX_WAIT_SECONDS))
+                await wait_for(exc.wait)
                 continue
             budget.settle(entry, result.tokens)
             return result
-        raise LLMError("Groq per-minute limit keeps being reached - try again shortly")
+        raise _busy(MAX_WAIT_SECONDS)
 
     async def _post(self, key: str, model: str, system: str, user: str, schema_name: str, schema: dict) -> LLMResult:
         body: dict[str, Any] = {

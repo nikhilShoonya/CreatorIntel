@@ -30,6 +30,7 @@ from app.services.api_usage import (
     record_youtube_call,
     record_youtube_quota_exceeded,
 )
+from app.services import youtube_keys
 from app.services.http_client import HttpRequestError, request_json
 from app.utils.logging import log_event
 from app.utils.url_parser import ParsedLink
@@ -109,7 +110,6 @@ class YouTubeVideoClient:
     def __init__(self, settings: Settings | None = None, client: httpx.AsyncClient | None = None):
         self.settings = settings or get_settings()
         self.client = client
-        self._key_index = 0
 
     def _require_key(self) -> list[str]:
         keys = self.settings.youtube_api_keys
@@ -119,26 +119,25 @@ class YouTubeVideoClient:
 
     async def _get(self, resource: str, params: dict[str, Any]) -> dict:
         keys = self._require_key()
-        while True:
-            index = min(self._key_index, len(keys) - 1)
+        # Always start from the first usable key (a key skipped for quota is used again after the daily reset).
+        candidates = youtube_keys.usable(keys) or keys
+        for position, key in enumerate(candidates):
             try:
                 return await request_json(
                     "GET", f"{YOUTUBE_API}/{resource}", service="YouTube API", params=params,
-                    headers={"X-Goog-Api-Key": keys[index]}, client=self.client,
-                    on_attempt=lambda key=keys[index]: record_youtube_call(key),
+                    headers={"X-Goog-Api-Key": key}, client=self.client,
+                    on_attempt=lambda key=key: record_youtube_call(key),
                 )
             except HttpRequestError as exc:
-                error = (exc.payload or {}).get("error", {}) if isinstance(exc.payload, dict) else {}
-                reasons = {e.get("reason") for e in error.get("errors", []) if isinstance(e, dict)}
-                quota = bool(reasons & {"quotaExceeded", "dailyLimitExceeded"})
+                reasons = youtube_keys.error_reasons(exc.payload)
+                quota = bool(reasons & youtube_keys.QUOTA_REASONS)
+                bad_key = not quota and youtube_keys.is_key_problem(exc.status_code, exc.payload)
                 if quota:
-                    record_youtube_quota_exceeded(keys[index])
-                bad_key = exc.status_code in (400, 401, 403) and not quota and (
-                    "API key" in str(error.get("message", "")) or reasons & {"keyInvalid", "accessNotConfigured"}
-                )
-                if (quota or bad_key) and index + 1 < len(keys):
-                    if self._key_index == index:
-                        self._key_index = index + 1
+                    record_youtube_quota_exceeded(key)
+                    youtube_keys.mark_quota_exhausted(key)
+                elif bad_key:
+                    youtube_keys.mark_invalid(key)
+                if (quota or bad_key) and position + 1 < len(candidates):
                     continue
                 if quota:
                     raise PlatformError(PlatformError.RATE_LIMITED, "YouTube API daily quota exceeded") from exc
@@ -147,6 +146,7 @@ class YouTubeVideoClient:
                 if exc.status_code == 404:
                     raise PlatformError(PlatformError.NOT_FOUND, "YouTube resource not found") from exc
                 raise PlatformError(PlatformError.API, exc.message) from exc
+        raise PlatformError(PlatformError.CONFIG, "YouTube API is not configured (YOUTUBE_API_KEY)")
 
     async def videos(self, video_ids: list[str]) -> dict[str, VideoMetrics]:
         """Statistics + snippet for up to 50 videos per request. Missing IDs are absent from the result."""

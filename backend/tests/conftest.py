@@ -36,3 +36,15 @@ os.environ.update(
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import pytest  # noqa: E402
+
+from app.services import youtube_keys  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _fresh_youtube_key_state():
+    """A key skipped by one test (quota / invalid) must not be skipped in the next one."""
+    youtube_keys.reset()
+    yield
+    youtube_keys.reset()

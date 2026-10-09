@@ -138,8 +138,12 @@ def delete_creators(db: Session, creator_ids: list[int]) -> int:
     return deleted
 
 
-def delete_upload(db: Session, settings: Settings, upload: Upload, delete_creators_too: bool) -> int:
-    """Delete an upload. Optionally delete its creators that belong to no other upload. Returns creators removed."""
+def delete_upload(db: Session, upload: Upload, delete_creators_too: bool) -> int:
+    """Delete an upload. Optionally delete its creators that belong to no other upload. Returns creators removed.
+
+    The stored file is not touched here: call remove_upload_file after the commit, so a failed commit
+    never leaves an upload whose file is already gone.
+    """
     if upload.status == UploadStatus.PROCESSING:
         raise CreatorBusy("This upload is still being processed")
     creator_ids = list(db.scalars(select(UploadItem.creator_id).where(UploadItem.upload_id == upload.id)))
@@ -151,12 +155,16 @@ def delete_upload(db: Session, settings: Settings, upload: Upload, delete_creato
         orphans = [cid for cid in creator_ids if cid not in still_used]
         removed = delete_creators(db, orphans)
 
-    if upload.stored_filename:
-        path = settings.upload_dir / Path(upload.stored_filename).name
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            log_event(logger, logging.WARNING, "upload_file_not_removed", upload_id=upload.id)
     db.execute(delete(Upload).where(Upload.id == upload.id))
     log_event(logger, logging.INFO, "upload_deleted", upload_id=upload.id, creators_removed=removed)
     return removed
+
+
+def remove_upload_file(settings: Settings, stored_filename: str | None, upload_id: str) -> None:
+    """Delete a deleted upload's stored file (after its database rows are committed)."""
+    if not stored_filename:
+        return
+    try:
+        (settings.upload_dir / Path(stored_filename).name).unlink(missing_ok=True)
+    except OSError:
+        log_event(logger, logging.WARNING, "upload_file_not_removed", upload_id=upload_id)

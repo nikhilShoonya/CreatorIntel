@@ -11,6 +11,7 @@ import logging
 import time
 from collections import Counter
 from collections.abc import Coroutine
+from weakref import WeakValueDictionary
 from datetime import datetime
 from typing import Any
 
@@ -95,8 +96,9 @@ class EnrichmentOrchestrator:
         self.analyzer = analyzer or ContentAnalyzer(settings=self.settings)
         self.validator = ResultValidator()
         self._semaphore = asyncio.Semaphore(self.settings.max_concurrent_creators)
-        self._locks: dict[int, asyncio.Lock] = {}
-        self._identity_locks: dict[str, asyncio.Lock] = {}
+        # Weak values: a lock is dropped once no task holds or waits for it (no growth over thousands of creators).
+        self._locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+        self._identity_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._tasks: set[asyncio.Task] = set()
         # Progress of the "Refresh data" bulk job on the creator list (one at a time).
         self._bulk_running = False
@@ -292,11 +294,18 @@ class EnrichmentOrchestrator:
             )
 
     # ------------------------------------------------------------------ creators
+    @staticmethod
+    def _shared_lock(locks: WeakValueDictionary, key) -> asyncio.Lock:
+        lock = locks.get(key)
+        if lock is None:
+            lock = locks[key] = asyncio.Lock()
+        return lock
+
     def _lock_for(self, creator_id: int) -> asyncio.Lock:
-        return self._locks.setdefault(creator_id, asyncio.Lock())
+        return self._shared_lock(self._locks, creator_id)
 
     def _identity_lock(self, platform: str, platform_id: str | None) -> asyncio.Lock:
-        return self._identity_locks.setdefault(f"{platform}:{platform_id}", asyncio.Lock())
+        return self._shared_lock(self._identity_locks, f"{platform}:{platform_id}")
 
     def _collector_for(self, platform: str):
         return self.youtube if platform == "youtube" else self.instagram

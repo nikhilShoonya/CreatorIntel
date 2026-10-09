@@ -171,7 +171,8 @@ export function UploadsPanel({ refreshToken, onToast, onChanged }: { refreshToke
           </tbody>
         </table>
       </div>
-      <UploadVideosDialog upload={viewing} onClose={() => setViewing(null)} onToast={onToast} onChanged={onChanged} />
+      {/* keyed by upload so "show invalid rows" and other dialog state start fresh for each file */}
+      <UploadVideosDialog key={viewing?.id ?? "none"} upload={viewing} onClose={() => setViewing(null)} onToast={onToast} onChanged={onChanged} />
     </>
   );
 }

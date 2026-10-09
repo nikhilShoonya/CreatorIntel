@@ -12,10 +12,11 @@ export function formatGrowth(value: number | null | undefined): string {
   return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
 }
 
-/** "Today 06:30", "Yesterday 18:02", "29 Sept" */
-export function formatChecked(value: string | null | undefined): string {
+/** "Today 06:30", "Yesterday 18:02", "29 Sept" (with `withTime`: "29 Sept, 06:30 pm"; older years add the year) */
+export function formatChecked(value: string | null | undefined, withTime = false): string {
   if (!value) return "Never";
   const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Never";
   const now = new Date();
   const time = date.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
   const dayDiff = Math.round(
@@ -23,7 +24,12 @@ export function formatChecked(value: string | null | undefined): string {
   );
   if (dayDiff === 0) return `Today ${time}`;
   if (dayDiff === 1) return `Yesterday ${time}`;
-  return date.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+  const day = date.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    ...(date.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
+  });
+  return withTime ? `${day}, ${time}` : day;
 }
 
 export function growthTone(value: number | null | undefined): string {

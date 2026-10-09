@@ -156,6 +156,11 @@ def _upload_scope(upload_id: str | None) -> list[int] | None:
     return ids
 
 
+def _check_status(status: str | None) -> None:
+    if status and status not in VideoStatus.ALL:
+        raise HTTPException(status_code=422, detail="Unknown status")
+
+
 def _TZ_LABEL() -> str:
     return tz_label(get_settings().video_tracking_timezone)
 
@@ -201,6 +206,7 @@ async def export_videos(
     upload_id: str | None = Query(default=None, max_length=32),
 ):
     """Tracked videos (respecting the table's filters) as a report or import-ready list."""
+    _check_status(status)
     video_ids = await run_in_threadpool(_upload_scope, upload_id)
     filters = queries.VideoFilters(q=q or None, platform=platform, creator=creator or None, status=status,
                                    sort_by=sort_by, sort_dir=sort_dir, video_ids=video_ids)
@@ -271,8 +277,7 @@ def list_videos(
 ):
     if page_size not in PAGE_SIZES:
         raise HTTPException(status_code=422, detail=f"page_size must be one of {PAGE_SIZES}")
-    if status and status not in VideoStatus.ALL:
-        raise HTTPException(status_code=422, detail="Unknown status")
+    _check_status(status)
     filters = queries.VideoFilters(q=q or None, platform=platform, creator=creator or None, creator_id=creator_id,
                                    status=status, sort_by=sort_by, sort_dir=sort_dir, video_ids=_upload_scope(upload_id))
     items, total, total_pages, counts = queries.list_videos(filters, page, page_size)

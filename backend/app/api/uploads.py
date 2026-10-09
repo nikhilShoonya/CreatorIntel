@@ -17,7 +17,7 @@ from app.config.settings import get_settings
 from app.models.db import get_db, get_read_db
 from app.models.entities import Creator, CreatorStatus, Upload, UploadItem, UploadRow, UploadStatus
 from app.schemas.api import DeleteResult, UploadDetailOut, UploadItemOut, UploadOut, UploadRowOut, UploadRowsOut
-from app.services.creator_service import CreatorBusy, delete_upload
+from app.services.creator_service import CreatorBusy, delete_upload, remove_upload_file
 from app.services.orchestrator import EnrichmentOrchestrator
 from app.utils.spreadsheet import table_bytes
 from app.services.upload_service import create_upload, store_upload_file, upload_status_counts
@@ -229,10 +229,12 @@ def remove_upload(
     upload = db.get(Upload, upload_id)
     if upload is None:
         raise HTTPException(status_code=404, detail="Upload not found")
+    stored_filename = upload.stored_filename
     try:
-        removed = delete_upload(db, get_settings(), upload, delete_creators)
+        removed = delete_upload(db, upload, delete_creators)
     except CreatorBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.commit()
+    remove_upload_file(get_settings(), stored_filename, upload_id)  # only once the delete is committed
     suffix = f" and {removed} creator{'s' if removed != 1 else ''}" if delete_creators else ""
     return DeleteResult(deleted=1, message=f"Deleted upload{suffix}")

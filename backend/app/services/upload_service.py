@@ -92,6 +92,8 @@ def create_upload(db: Session, settings: Settings, filename: str, stored_filenam
     resolved: list[tuple[int, object, Creator, bool]] = []
     new_creators: list[Creator] = []
     cached = 0
+    ttl = settings.cache_ttl_hours
+    cached_note = f"Recent data reused (fetched in the last {ttl:g} hour{'' if ttl == 1 else 's'})"
     for position, row in enumerate(ingestion.rows, start=1):
         creator = existing.get(row.dedupe_key)
         from_cache = False
@@ -125,7 +127,7 @@ def create_upload(db: Session, settings: Settings, filename: str, stored_filenam
                 channel_name=row.channel_name,
                 channel_link=row.channel_link,
                 outcome="invalid" if row.error else ("cached" if from_cache else "queued"),
-                message=row.error or ("Recent data reused (fetched in the last 24 hours)" if from_cache else None),
+                message=row.error or (cached_note if from_cache else None),
             )
         )
     db.add_all(duplicate_upload_rows(upload.id, ingestion))

@@ -106,8 +106,12 @@ def list_videos(filters: VideoFilters, page: int, page_size: int) -> tuple[list[
     with ThreadPoolExecutor(max_workers=1) as pool:
         counts_future = pool.submit(_status_counts, select(counts_sub.c.status, func.count()).group_by(counts_sub.c.status))
         items, total = _page(stmt, page, page_size)
+        total_pages = max(1, math.ceil(total / page_size))
+        if page > total_pages and total:  # past the end (e.g. after deletes): show the last page instead
+            items, total = _page(stmt, total_pages, page_size)
+            total_pages = max(1, math.ceil(total / page_size))
         status_counts = counts_future.result()
-    return items, total, max(1, math.ceil(total / page_size)), status_counts
+    return items, total, total_pages, status_counts
 
 
 def _status_counts(stmt) -> dict[str, int]:
