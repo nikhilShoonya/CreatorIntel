@@ -118,6 +118,8 @@ class InstagramCollector:
             return CollectionError(
                 CollectionError.AUTH_ERROR, "Meta access token is invalid or expired", account_access="api_error"
             )
+        if code == 100 and subcode == 33:  # requests are made on our own Instagram account
+            return CollectionError(CollectionError.AUTH_ERROR, "The Meta token cannot access your Instagram Business account (META_IG_BUSINESS_ACCOUNT_ID) - check that the token is valid and that this account is assigned to it", account_access="api_error")
         if code in _PERMISSION_CODES:
             return CollectionError(
                 CollectionError.AUTH_ERROR,

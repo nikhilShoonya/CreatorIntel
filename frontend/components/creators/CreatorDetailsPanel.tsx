@@ -193,9 +193,9 @@ function ProfileCard({ creator }: { creator: CreatorDetail }) {
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_85%_20%,rgba(255,255,255,0.35),transparent_55%)]" />
         </div>
         <div className="flex items-end gap-4 px-4">
-          {creator.profile_picture_url ? (
+          {safeHref(creator.profile_picture_url) ? (
             <a
-              href={creator.profile_picture_url}
+              href={safeHref(creator.profile_picture_url)}
               target="_blank"
               rel="noopener noreferrer"
               className="-mt-10 shrink-0 rounded-full transition-opacity hover:opacity-90"

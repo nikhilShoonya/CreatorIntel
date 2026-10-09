@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
         ai_configured=settings.ai_configured,
     )
     orchestrator.resume_incomplete()
+    orchestrator.start_ai_backlog()
 
     # Video Performance module: its own tracker + daily scheduler (independent of Creator Analytics)
     video_tracker = VideoTracker(settings)

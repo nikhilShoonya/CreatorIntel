@@ -172,13 +172,25 @@ def save_sentiment(video_id: int, result: SentimentResult, model: str) -> None:
         video.sentiment_confidence = result.confidence
 
 
+def video_contents(video_ids: list[int]) -> dict[int, tuple[str | None, str | None]]:
+    """Title and caption of several videos in one query (keeps the given order)."""
+    with read_scope() as db:
+        rows = {r.id: (r.title, r.caption) for r in db.execute(
+            select(VtVideo.id, VtVideo.title, VtVideo.caption).where(VtVideo.id.in_(video_ids))
+        )}
+    return {vid: rows[vid] for vid in video_ids if vid in rows}
+
+
 def video_content(video_id: int) -> tuple[str | None, str | None]:
     with read_scope() as db:
         row = db.execute(select(VtVideo.title, VtVideo.caption).where(VtVideo.id == video_id)).first()
         return (row.title, row.caption) if row else (None, None)
 
 
-def videos_due_for_refresh(max_days: int) -> list[int]:
+DOWN_STOPPED_NOTE = "no longer checked daily - use Retry to check again"
+
+
+def videos_due_for_refresh(max_days: int, down_recheck_days: int = 0) -> list[int]:
     with session_scope() as db:
         if max_days > 0:
             cutoff = utcnow() - timedelta(days=max_days)
@@ -187,7 +199,41 @@ def videos_due_for_refresh(max_days: int) -> list[int]:
                 .where(VtVideo.status.in_(VideoStatus.DAILY), VtVideo.tracking_started_at < cutoff)
                 .values(status=VideoStatus.COMPLETED, status_reason=f"Tracking window of {max_days} days finished")
             )
-        return list(db.scalars(select(VtVideo.id).where(VtVideo.status.in_(VideoStatus.DAILY)).order_by(VtVideo.id)))
+        ids = list(db.scalars(select(VtVideo.id).where(VtVideo.status.in_(VideoStatus.DAILY)).order_by(VtVideo.id)))
+        if down_recheck_days > 0:
+            # Videos that have been unavailable for a long time are no longer re-checked every day.
+            cutoff = utcnow() - timedelta(days=down_recheck_days)
+            last_seen = (
+                select(VtViewSnapshot.video_id, func.max(VtViewSnapshot.captured_at).label("seen"))
+                .group_by(VtViewSnapshot.video_id)
+                .subquery()
+            )
+            stale = set(db.scalars(
+                select(VtVideo.id)
+                .outerjoin(last_seen, last_seen.c.video_id == VtVideo.id)
+                .where(VtVideo.status == VideoStatus.VIDEO_DOWN,
+                       func.coalesce(last_seen.c.seen, VtVideo.tracking_started_at) < cutoff)
+            ))
+            if stale:
+                for video in db.scalars(select(VtVideo).where(VtVideo.id.in_(stale))):
+                    if DOWN_STOPPED_NOTE not in (video.status_reason or ""):
+                        reason = (video.status_reason or "Video unavailable").rstrip(".")
+                        video.status_reason = f"{reason} - unavailable for {down_recheck_days}+ days, {DOWN_STOPPED_NOTE}"
+                ids = [i for i in ids if i not in stale]
+        return ids
+
+
+def status_counts(video_ids: list[int]) -> dict[str, int]:
+    """Current status of the given videos, counted (for job summaries)."""
+    counts: dict[str, int] = {}
+    with read_scope() as db:
+        for start in range(0, len(video_ids), 500):
+            chunk = video_ids[start : start + 500]
+            for status, n in db.execute(
+                select(VtVideo.status, func.count()).where(VtVideo.id.in_(chunk)).group_by(VtVideo.status)
+            ):
+                counts[status] = counts.get(status, 0) + n
+    return counts
 
 
 def recover_after_restart() -> list[int]:
@@ -258,6 +304,12 @@ def last_completed_run(job_type: str) -> datetime | None:
                 select(func.max(VtJobRun.started_at)).where(VtJobRun.job_type == job_type, VtJobRun.status == "completed")
             )
         )
+
+
+def last_started_run(job_type: str) -> datetime | None:
+    """Start of the most recent run of this job, whatever its outcome."""
+    with read_scope() as db:
+        return as_utc(db.scalar(select(func.max(VtJobRun.started_at)).where(VtJobRun.job_type == job_type)))
 
 
 def latest_runs(limit_per_type: int = 1) -> list[VtJobRun]:

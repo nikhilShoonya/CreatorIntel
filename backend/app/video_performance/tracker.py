@@ -11,17 +11,15 @@ import asyncio
 import logging
 import time
 import uuid
-from datetime import timedelta
 from collections import defaultdict
 from collections.abc import Callable, Coroutine
 from typing import Any
 
 from app.config.settings import Settings, get_settings
 from app.utils.logging import log_event
-from app.utils.time import utcnow
 from app.utils.url_parser import parse_channel_link
 from app.video_performance import repository as repo
-from app.video_performance.models import JobType
+from app.video_performance.models import JobType, VideoStatus
 from app.video_performance.platforms import (
     ChannelInfo,
     DiscoveredVideo,
@@ -32,11 +30,11 @@ from app.video_performance.platforms import (
     YouTubeVideoClient,
 )
 from app.video_performance.sentiment import VideoSentimentAnalyzer
+from app.video_performance.timeutil import job_times, slot_start_utc
 
 logger = logging.getLogger("creatorintel.video_performance")
 
 DISCOVERY_LOOKBACK = 15  # latest uploads/media checked per creator per run
-SCHEDULED_MIN_GAP_HOURS = 20  # a scheduled run is skipped if the job already completed this recently
 
 
 class VideoTracker:
@@ -54,7 +52,6 @@ class VideoTracker:
         self.instagram = instagram or InstagramVideoClient(self.settings)
         self.facebook = facebook or FacebookVideoClient(self.settings)
         self.sentiment = sentiment or VideoSentimentAnalyzer(self.settings)
-        self._ai_semaphore = asyncio.Semaphore(3)
         self._job_locks = {JobType.METRICS_REFRESH: asyncio.Lock(), JobType.CREATOR_DISCOVERY: asyncio.Lock()}
         self._tasks: set[asyncio.Task] = set()
         self._in_flight: set[int] = set()
@@ -186,7 +183,8 @@ class VideoTracker:
             for _ in range(len(video_ids) - len(rows)):  # videos that could not be claimed (deleted/paused)
                 on_done()
 
-        await asyncio.gather(*(self._analyse(video_id) for video_id in to_analyse))
+        if to_analyse:
+            await self._analyse(to_analyse)
         log_event(
             logger, logging.INFO, "vt_batch_done",
             videos=len(rows), succeeded=succeeded, failed=failed, duration_s=f"{time.perf_counter() - started:.1f}",
@@ -222,7 +220,10 @@ class VideoTracker:
         try:
             profile, media = await self.instagram.profile_media(owner, pages=pages)
         except PlatformError as exc:
-            error = PlatformError(exc.code, f"@{owner}: {exc.message}")  # say which account was looked up
+            # say which account was looked up - except for token/config problems, which are not about it
+            error = exc if exc.code in (PlatformError.AUTH, PlatformError.CONFIG) else PlatformError(
+                exc.code, f"@{owner}: {exc.message}"
+            )
             for row in rows:
                 results[row["id"]] = error
             return
@@ -236,11 +237,20 @@ class VideoTracker:
         for row in rows:
             item = by_code.get(row["identifier"])
             if item is None:
-                results[row["id"]] = PlatformError(
-                    PlatformError.NOT_FOUND if scanned_all else PlatformError.UNSUPPORTED,
-                    f"Reel not found on @{owner}'s account" if scanned_all
-                    else f"Reel is older than @{owner}'s latest {len(media)} posts that the official API returns",
-                )
+                if not scanned_all:
+                    error = PlatformError(
+                        PlatformError.UNSUPPORTED,
+                        f"Reel is older than @{owner}'s latest {len(media)} posts that the official API returns",
+                    )
+                elif row.get("seen"):  # it was there before -> deleted or made private
+                    error = PlatformError(PlatformError.NOT_FOUND, f"Reel no longer found on @{owner}'s account")
+                else:  # never found: wrong username in the file, or a collab reel posted from another account
+                    error = PlatformError(
+                        PlatformError.UNSUPPORTED,
+                        f"Reel not found on @{owner}'s posts - check the Instagram username (a collab reel is "
+                        f"listed under the account that posted it)",
+                    )
+                results[row["id"]] = error
                 continue
             results[row["id"]] = VideoMetrics(
                 identifier=item.shortcode,
@@ -253,18 +263,24 @@ class VideoTracker:
                 notes=[] if item.is_video else ["This post is not a video/reel"],
             )
 
-    async def _analyse(self, video_id: int) -> None:
-        async with self._ai_semaphore:
+    async def _analyse(self, video_ids: list[int]) -> None:
+        """Sentiment for new videos, several per AI request. Pending ones are not saved, so the next run retries them."""
+        try:
+            contents = await asyncio.to_thread(repo.video_contents, video_ids)
+            results = await self.sentiment.analyze_many((vid, title, caption) for vid, (title, caption) in contents.items())
+        except Exception:
+            logger.exception("vt_sentiment_crashed videos=%s", len(video_ids))
+            return
+        for video_id, result in results.items():
+            ctx = {"video_id": video_id, "stage": "sentiment", "sentiment": result.sentiment or "none", "reason": result.error}
+            if result.pending:
+                log_event(logger, logging.INFO, "vt_sentiment_pending", **ctx)
+                continue
             try:
-                title, caption = await asyncio.to_thread(repo.video_content, video_id)
-                result = await self.sentiment.analyze(title, caption, video_id=video_id)
-                await asyncio.to_thread(repo.save_sentiment, video_id, result, self.sentiment.model_name)
-                log_event(
-                    logger, logging.INFO, "vt_sentiment", video_id=video_id, stage="sentiment",
-                    sentiment=result.sentiment or "none", reason=result.error,
-                )
+                await asyncio.to_thread(repo.save_sentiment, video_id, result, result.model or self.sentiment.model_name)
+                log_event(logger, logging.INFO, "vt_sentiment", **ctx)
             except Exception:
-                logger.exception("vt_sentiment_crashed video_id=%s", video_id)
+                logger.exception("vt_sentiment_save_crashed video_id=%s", video_id)
 
     # ------------------------------------------------------------- creators
     async def _resolve_creator(self, row: dict) -> None:
@@ -368,9 +384,12 @@ class VideoTracker:
         """Run a job at most once at a time - in this process and across processes sharing the database."""
         async with self._job_locks[job_type]:
             if trigger != "manual":
+                # Automatic runs: once per daily slot (since the most recent scheduled time), never based on
+                # how many hours ago the last run was - a manual run yesterday afternoon must not cancel today's.
+                slot = slot_start_utc(job_times(self.settings)[job_type])
                 last = await asyncio.to_thread(repo.last_completed_run, job_type)
-                if last is not None and utcnow() - last < timedelta(hours=SCHEDULED_MIN_GAP_HOURS):
-                    log_event(logger, logging.INFO, "vt_job_skipped_recent_run", job=job_type, trigger=trigger)
+                if last is not None and last >= slot:
+                    log_event(logger, logging.INFO, "vt_job_skipped_already_ran", job=job_type, trigger=trigger)
                     return
             owner = uuid.uuid4().hex
             if not await asyncio.to_thread(repo.acquire_job_lock, job_type, owner):
@@ -386,14 +405,26 @@ class VideoTracker:
         started = time.perf_counter()
         succeeded = failed = total = 0
         try:
-            ids = await asyncio.to_thread(repo.videos_due_for_refresh, self.settings.video_tracking_max_days)
+            ids = await asyncio.to_thread(
+                repo.videos_due_for_refresh, self.settings.video_tracking_max_days,
+                self.settings.video_tracking_down_recheck_days,
+            )
             total = len(ids)
             self._progress[JobType.METRICS_REFRESH] = [0, total]
             tick = lambda: self._tick(JobType.METRICS_REFRESH)  # noqa: E731
             for start in range(0, len(ids), 200):  # bounded batches
                 ok, bad = await self.process_videos(ids[start : start + 200], tick)
                 succeeded, failed = succeeded + ok, failed + bad
-            message = f"Refreshed {succeeded} of {total} videos in {time.perf_counter() - started:.0f}s"
+            counts = await asyncio.to_thread(repo.status_counts, ids) if failed else {}
+            details = [
+                f"{n} {label}" for label, n in (
+                    ("down", counts.get(VideoStatus.VIDEO_DOWN, 0)),
+                    ("unsupported", counts.get(VideoStatus.UNSUPPORTED, 0)),
+                    ("failed", counts.get(VideoStatus.FAILED, 0)),
+                ) if n
+            ]
+            message = (f"Refreshed {succeeded} of {total} videos" + (f" ({', '.join(details)})" if details else "")
+                       + f" in {time.perf_counter() - started:.0f}s")
             await asyncio.to_thread(repo.finish_job, run_id, total, succeeded, failed, message)
         except Exception as exc:
             logger.exception("vt_refresh_job_crashed")

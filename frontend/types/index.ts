@@ -145,6 +145,7 @@ export interface YouTubeQuota {
 
 export interface InstagramUsage {
   calls_today: number;
+  facebook_calls_today: number;
   percent: number;
   observed_at: string | null;
   stale: boolean;
@@ -152,9 +153,35 @@ export interface InstagramUsage {
   note: string;
 }
 
+export interface GroqKeyStatus {
+  slot: number;
+  state: "active" | "standby" | "unusable" | "daily_limit";
+  message: string;
+  until: string | null;
+}
+
+export interface GroqUsage {
+  configured: boolean;
+  model: string;
+  active_slot: number | null;
+  tokens_today: number;
+  tokens_per_day: number;
+  percent: number;
+  requests_today: number;
+  requests_per_day: number;
+  requests_source: "groq" | "counted";
+  daily_limit_reached: boolean;
+  resets_at: string | null;
+  keys: GroqKeyStatus[];
+  pending_creators: number;
+  pending_videos: number;
+  note: string;
+}
+
 export interface ApiUsage {
   youtube: YouTubeQuota;
   instagram: InstagramUsage;
+  groq: GroqUsage;
 }
 
 export interface InstagramTokenStatus {

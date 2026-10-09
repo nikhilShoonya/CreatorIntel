@@ -22,6 +22,7 @@ from app.video_performance.sentiment import VideoSentimentAnalyzer
 from app.video_performance.share_links import ShareLinkResolver
 from app.video_performance.tracker import VideoTracker
 from app.video_performance.urls import parse_video_link
+from tests.fakes import sentiment_batch_response
 
 PAGE_ID = "1361142767079677"
 SYSTEM_TOKEN = "EAAsystem-user-token-SECRET"
@@ -78,8 +79,8 @@ def instagram(request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, json={"business_discovery": {"id": "9", "username": "mixowner", "media": {"data": media}}})
 
 
-def llm(_request: httpx.Request) -> httpx.Response:
-    return httpx.Response(200, json={"choices": [{"message": {"content": '{"sentiment": "Neutral", "confidence": 0.7}'}}]})
+def llm(request: httpx.Request) -> httpx.Response:
+    return sentiment_batch_response(request, "Neutral", 0.7)
 
 
 def share_redirects(request: httpx.Request) -> httpx.Response:

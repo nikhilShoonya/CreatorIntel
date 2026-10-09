@@ -16,7 +16,13 @@ from typing import Any
 
 from sqlalchemy import delete, select, update
 
-from app.agents.content_analysis_agent import ContentAnalyzer, build_content_sample, resolve_display_values
+from app.agents.content_analysis_agent import (
+    PENDING_PREFIX,
+    AnalysisOutcome,
+    ContentAnalyzer,
+    build_content_sample,
+    resolve_display_values,
+)
 from app.agents.instagram_agent import InstagramCollector
 from app.agents.metrics_agent import MetricsProcessor, MetricsResult
 from app.agents.platform_agent import PlatformResolver
@@ -39,6 +45,11 @@ _ENRICHED_FIELDS = (
     "average_views_short", "average_views_short_count", "top_video_title", "top_video_url",
     "top_video_views", "engagement_rate", "engagement_rate_basis", "engagement_sample_count",
 )
+AI_BACKLOG_INTERVAL_SECONDS = 15 * 60
+AI_BACKLOG_BATCH = 10
+_AI_PROVENANCE_KEYS = ("genre", "sub_genre", "language", "sentiment")
+_KEPT_AI_ISSUES = ("Language confidence", "Sentiment confidence")
+
 _AI_FIELDS = (
     "genre", "sub_genre", "genre_needs_review", "language", "secondary_language", "sentiment",
     "sentiment_score", "genre_confidence", "language_confidence", "sentiment_confidence", "evidence_topics",
@@ -98,6 +109,53 @@ class EnrichmentOrchestrator:
         task = asyncio.create_task(coro, name=name)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    def start_ai_backlog(self, interval_seconds: float = AI_BACKLOG_INTERVAL_SECONDS) -> None:
+        """Finish creators whose AI analysis was postponed by Groq's daily limit, once quota is back."""
+        self._schedule(self._ai_backlog_loop(interval_seconds), "ai-backlog")
+
+    async def _ai_backlog_loop(self, interval_seconds: float) -> None:
+        await asyncio.sleep(min(60.0, interval_seconds))
+        while True:
+            try:
+                llm = self.analyzer.llm
+                if llm.configured and llm.quota_available():
+                    ids = await asyncio.to_thread(self._pending_ai_creators, AI_BACKLOG_BATCH)
+                    for creator_id in ids:
+                        self.start_reanalyze(creator_id)
+                    if ids:
+                        log_event(logger, logging.INFO, "ai_backlog_started", creators=len(ids))
+            except Exception:
+                logger.exception("ai_backlog_failed")
+            await asyncio.sleep(interval_seconds)
+
+    @staticmethod
+    def _pending_ai_creators(limit: int) -> list[int]:
+        with session_scope() as db:
+            rows = db.execute(
+                select(Creator.id, Creator.issues)
+                .where(Creator.analyzed_at.is_(None), Creator.content_sample.is_not(None),
+                       Creator.status != CreatorStatus.PROCESSING)
+                .order_by(Creator.id)
+                .limit(500)
+            ).all()
+        return [cid for cid, issues in rows if any(PENDING_PREFIX in str(i) for i in (issues or []))][:limit]
+
+    @staticmethod
+    def _reusable_ai(creator_id: int, sample: dict) -> dict | None:
+        """Previous AI result, when the creator's content sample has not changed since it was produced."""
+        with session_scope() as db:
+            creator = db.get(Creator, creator_id)
+            if creator is None or creator.analyzed_at is None or not creator.content_sample:
+                return None
+            if creator.content_sample != sample:
+                return None
+            return {
+                "values": {key: getattr(creator, key) for key in _AI_FIELDS},
+                "provenance": {k: v for k, v in (creator.provenance or {}).items() if k in _AI_PROVENANCE_KEYS},
+                "issues": [i for i in (creator.issues or []) if str(i).startswith(_KEPT_AI_ISSUES)],
+                "analyzed_at": creator.analyzed_at,
+            }
 
     def start_upload(self, upload_id: str) -> None:
         self._schedule(self.process_upload(upload_id), f"upload-{upload_id}")
@@ -299,17 +357,26 @@ class EnrichmentOrchestrator:
         metrics = self.metrics.compute(profile)
         sample = build_content_sample(profile)
 
-        log_event(logger, logging.INFO, "stage_ai_analysis", **ctx)
-        analysis = await self.analyzer.analyze(sample, creator_id=creator_id)
+        # Same content as last time -> keep the previous AI result instead of spending Groq quota again.
+        reused = await asyncio.to_thread(self._reusable_ai, creator_id, sample)
+        if reused is not None:
+            analysis = AnalysisOutcome(issues=reused["issues"])
+            log_event(logger, logging.INFO, "stage_ai_reused", **ctx)
+        else:
+            log_event(logger, logging.INFO, "stage_ai_analysis", **ctx)
+            analysis = await self.analyzer.analyze(sample, creator_id=creator_id)
 
         values = self._assemble(channel_url, profile, metrics)
         issues = [*profile.notes, *metrics.notes, *analysis.issues]
         provenance = dict(metrics.provenance)
-        if analysis.result is not None:
+        if reused is not None:
+            values.update(reused["values"])
+            provenance.update(reused["provenance"])
+        elif analysis.result is not None:
             ai_values = resolve_display_values(analysis.result, self.settings.ai_min_confidence)
             values.update(ai_values)
-            for key in ("genre", "sub_genre", "language", "sentiment"):
-                provenance[key] = f"llm_analysis:groq:{self.settings.groq_model}"
+            for key in _AI_PROVENANCE_KEYS:
+                provenance[key] = f"llm_analysis:groq:{analysis.model or self.settings.groq_model}"
         else:
             values.update({key: None for key in _AI_FIELDS})
             values["genre_needs_review"] = False
@@ -318,7 +385,7 @@ class EnrichmentOrchestrator:
         outcome = self.validator.validate(platform, values)
         issues.extend(outcome.issues)
         final = outcome.values
-        status = _status_for(final, analysis.result is not None)
+        status = _status_for(final, analysis.result is not None or reused is not None)
 
         def save() -> int | None:
             """Store results. Returns the ID this creator was merged into, if it was a duplicate channel."""
@@ -358,7 +425,9 @@ class EnrichmentOrchestrator:
                 target.status = status
                 target.error_message = None if status == CreatorStatus.COMPLETED else "; ".join(issues[:3]) or None
                 target.data_fetched_at = utcnow()
-                target.analyzed_at = utcnow() if analysis.result is not None else None
+                target.analyzed_at = (
+                    utcnow() if analysis.result is not None else reused["analyzed_at"] if reused is not None else None
+                )
                 return merged_into
 
         # Saves for the same channel run one after another, so the second one always sees the first
@@ -467,8 +536,8 @@ class EnrichmentOrchestrator:
                 for key in _AI_FIELDS:
                     setattr(creator, key, outcome.values.get(key))
                 provenance = dict(creator.provenance or {})
-                for key in ("genre", "sub_genre", "language", "sentiment"):
-                    provenance[key] = f"llm_analysis:groq:{self.settings.groq_model}"
+                for key in _AI_PROVENANCE_KEYS:
+                    provenance[key] = f"llm_analysis:groq:{analysis.model or self.settings.groq_model}"
                 creator.provenance = provenance
                 creator.analyzed_at = utcnow()
                 issues.extend(analysis.issues)

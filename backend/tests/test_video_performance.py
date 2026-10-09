@@ -6,7 +6,6 @@ External HTTP is served by in-test fakes (httpx.MockTransport). Views change bet
 
 import csv
 import io
-import json
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -26,6 +25,7 @@ from app.video_performance.platforms import InstagramVideoClient, YouTubeVideoCl
 from app.video_performance.sentiment import VideoSentimentAnalyzer
 from app.video_performance.tracker import VideoTracker
 from app.video_performance.urls import parse_instagram_handle, parse_video_link
+from tests.fakes import sentiment_batch_response
 
 YT_VIEWS = {"aaaaaaaaaaa": 2000, "bbbbbbbbbbb": 50_000}
 NEW_UPLOADS: list[dict] = []  # videos "published" on the tracked channel after tracking started
@@ -83,9 +83,7 @@ def instagram(request: httpx.Request) -> httpx.Response:
 
 
 def llm(request: httpx.Request) -> httpx.Response:
-    body = json.loads(request.content)
-    assert body["response_format"]["json_schema"]["name"] == "video_sentiment"
-    return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"sentiment": "Positive", "confidence": 0.9})}}]})
+    return sentiment_batch_response(request, "Positive", 0.9)
 
 
 def client_for(handler) -> httpx.AsyncClient:
@@ -252,7 +250,10 @@ def test_full_video_tracking_flow(api):
 
     fixed = api.put(f"/api/video-performance/videos/{unknown['id']}", json={"instagram_username": "tradingtech31"})
     assert fixed.status_code == 200
-    assert wait_idle(api)["Cnoowner1"]["status_reason"] == "Reel not found on @tradingtech31's account"
+    fixed_video = wait_idle(api)["Cnoowner1"]
+    # never found on that account -> not "Video Down": the username (or a collab post) is the likely cause
+    assert fixed_video["status"] == "Unsupported"
+    assert fixed_video["status_reason"].startswith("Reel not found on @tradingtech31's posts - check the Instagram username")
 
     renamed = api.put(f"/api/video-performance/videos/{ig['id']}", json={"creator_name": "Trading Tech Official"})
     assert renamed.json()["creator_name"] == "Trading Tech Official"

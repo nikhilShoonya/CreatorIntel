@@ -24,6 +24,7 @@ import httpx
 
 from app.config.settings import Settings, get_settings
 from app.services.api_usage import (
+    record_facebook_call,
     record_instagram_call,
     record_meta_usage,
     record_youtube_call,
@@ -276,6 +277,10 @@ class InstagramVideoClient:
             )
         if code == 190:
             return PlatformError(PlatformError.AUTH, "Meta access token is invalid or expired")
+        if code == 100 and sub == 33:
+            # Every Business Discovery request is made on OUR Instagram account, so "object does not exist /
+            # missing permissions" means the token cannot reach that account - not a problem with the video.
+            return PlatformError(PlatformError.AUTH, "The Meta token cannot access your Instagram Business account (META_IG_BUSINESS_ACCOUNT_ID) - check that the token is valid and that this account is assigned to it")
         if code in (10, 200, 3):
             return PlatformError(PlatformError.AUTH, "Instagram data unavailable with current API permissions")
         if code in _RATE_CODES or exc.status_code == 429:
@@ -347,6 +352,7 @@ class InstagramVideoClient:
         return profile, media
 
 # -------------------------------------------------------------------- Facebook
+_FB_VIEW_METRICS = ("total_video_views", "fb_reels_total_plays", "blue_reels_play_count")
 _FB_VIDEO_FIELDS = (
     "id,title,description,permalink_url,created_time,length,from{id,name},"
     "likes.summary(true).limit(0),comments.summary(true).limit(0)"
@@ -390,6 +396,7 @@ class FacebookVideoClient:
                 headers={"Authorization": f"Bearer {token}"},
                 should_retry=lambda _s, p: isinstance(p, dict) and (p.get("error") or {}).get("code") in _RATE_CODES,
                 client=self.client,
+                on_attempt=record_facebook_call,
                 on_response=record_meta_usage,
             )
         except HttpRequestError as exc:
@@ -452,18 +459,25 @@ class FacebookVideoClient:
             return await self._call(path, params, token)
 
     async def _views(self, video_id: str) -> int | None:
-        """total_video_views from video insights; None when Meta does not provide it for this video/token."""
-        try:
-            data = await self._page_get(f"{video_id}/video_insights", {"metric": "total_video_views"})
-        except PlatformError as exc:
-            if exc.code == PlatformError.RATE_LIMITED:
-                raise
-            log_event(logger, logging.INFO, "vt_facebook_views_unavailable", video_id=video_id, reason=exc.code)
-            return None
-        for metric in data.get("data") or []:
-            values = metric.get("values") or []
-            if metric.get("name") == "total_video_views" and values:
-                return _int(values[-1].get("value"))
+        """Views/plays from video insights; None when Meta does not provide them for this video/token.
+
+        Videos report total_video_views; Reels report fb_reels_total_plays / blue_reels_play_count instead,
+        so those are tried only when the first metric returns nothing.
+        """
+        for metric_name in _FB_VIEW_METRICS:
+            try:
+                data = await self._page_get(f"{video_id}/video_insights", {"metric": metric_name})
+            except PlatformError as exc:
+                if exc.code == PlatformError.RATE_LIMITED:
+                    raise
+                log_event(logger, logging.INFO, "vt_facebook_views_unavailable", video_id=video_id,
+                          metric=metric_name, reason=exc.code)
+                continue
+            for metric in data.get("data") or []:
+                values = metric.get("values") or []
+                value = _int(values[-1].get("value")) if values else None
+                if metric.get("name") == metric_name and value is not None:
+                    return value
         return None
 
     async def video(self, video_id: str) -> VideoMetrics:

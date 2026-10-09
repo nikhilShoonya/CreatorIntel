@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, SlidersHorizontal, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cpu, SlidersHorizontal, XCircle } from "lucide-react";
 
-import { InstagramUsageCard, TokenStatusCard, YouTubeQuotaCard } from "@/components/layout/TokenHealth";
+import { GroqUsageCard, InstagramUsageCard, TokenStatusCard, YouTubeQuotaCard } from "@/components/layout/TokenHealth";
 import { USER_NAME_KEY } from "@/components/layout/Topbar";
 import { Button, Card, ErrorBanner } from "@/components/ui/controls";
 import { PlatformIcon } from "@/components/ui/PlatformIcon";
@@ -113,6 +113,14 @@ export default function SettingsPage() {
               detail="Videos and reels on your own Facebook Page (Video Performance)."
               envVar="META_FACEBOOK_PAGE_ID"
             />
+            <Integration
+              icon={<Cpu size={22} className="text-slate-500" />}
+              name={`Groq AI (${config.ai_model})`}
+              configured={config.ai_configured}
+              detail="Genre, language and sentiment analysis."
+              envVar="GROQ_API_KEY_1"
+            />
+            {config.ai_configured && <GroqUsageCard />}
           </div>
         ) : (
           !error && <div className="h-40 animate-pulse" />

@@ -98,6 +98,7 @@ def test_instagram_calls_and_meta_usage_headers(client):
 
 def test_usage_endpoint_never_returns_secrets(client):
     body = client.get("/api/config/api-usage").json()
-    assert set(body) == {"youtube", "instagram"}
+    assert set(body) == {"youtube", "instagram", "groq"}
     assert body["youtube"]["total_limit"] == body["youtube"]["daily_limit_per_key"] * body["youtube"]["key_count"]
     assert "test-youtube-key" not in str(body) and "17841400000000000" not in str(body)
+    assert "test-groq-key" not in str(body) and body["groq"]["keys"][0]["slot"] == 1

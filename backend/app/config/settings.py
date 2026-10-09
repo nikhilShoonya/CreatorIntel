@@ -36,8 +36,24 @@ class Settings(BaseSettings):
 
     # Groq (OpenAI-compatible Chat Completions API). The default model supports
     # strict JSON-schema structured output.
-    groq_api_key: str = ""
+    groq_api_key: str = ""  # single key (used when GROQ_API_KEY_1..3 are not set)
+    # Separately authorised keys, used in order. The next key is used ONLY when the active key itself is
+    # unusable (invalid/revoked key, restricted account) - never to get around a rate or daily limit.
+    groq_api_key_1: str = ""
+    groq_api_key_2: str = ""
+    groq_api_key_3: str = ""
     groq_model: str = "openai/gpt-oss-20b"
+    # Optional extra models, used in order when the main model's daily limit is reached. Must support strict
+    # JSON-schema output. Comma-separated; empty (default) = only GROQ_MODEL is used.
+    groq_fallback_models: str = ""
+    # Free-plan per-minute limits of the models above; requests are paced below them.
+    groq_requests_per_minute: int = Field(default=30, ge=1)
+    groq_tokens_per_minute: int = Field(default=8000, ge=500)
+    # Free-plan daily limits, shown in Settings (Groq reports remaining requests itself once it has been called).
+    groq_tokens_per_day: int = Field(default=200_000, ge=1)
+    groq_requests_per_day: int = Field(default=1_000, ge=1)
+    # Video Performance: videos whose sentiment is rated in one AI request.
+    ai_sentiment_batch_size: int = Field(default=10, ge=1, le=25)
     groq_base_url: str = "https://api.groq.com/openai/v1"
 
     # --- Persistence ---------------------------------------------------
@@ -71,6 +87,8 @@ class Settings(BaseSettings):
     # --- Video Performance (independent module) ------------------------
     video_tracking_scheduler_enabled: bool = True
     video_tracking_timezone: str = "Asia/Kolkata"
+    # Video Down videos are re-checked daily for this many days after they were last seen, then only on Retry (0 = always).
+    video_tracking_down_recheck_days: int = Field(default=14, ge=0)
     video_tracking_refresh_time: str = "06:30"  # daily metric refresh (HH:MM, local to the timezone above)
     video_tracking_discovery_time: str = "06:00"  # daily new-video discovery for tracked creators
     video_tracking_max_days: int = Field(default=0, ge=0)  # stop tracking a video after N days (0 = never)
@@ -114,6 +132,17 @@ class Settings(BaseSettings):
         return bool(self.youtube_api_keys)
 
     @property
+    def groq_api_keys(self) -> list[str]:
+        numbered = [k.strip() for k in (self.groq_api_key_1, self.groq_api_key_2, self.groq_api_key_3) if k.strip()]
+        keys = numbered or ([self.groq_api_key.strip()] if self.groq_api_key.strip() else [])
+        return list(dict.fromkeys(keys))
+
+    @property
+    def groq_models(self) -> list[str]:
+        models = [self.groq_model, *(m.strip() for m in self.groq_fallback_models.split(","))]
+        return [m for m in dict.fromkeys(models) if m]
+
+    @property
     def facebook_configured(self) -> bool:
         return bool(self.meta_access_token.strip() and self.meta_facebook_page_id.strip())
 
@@ -135,7 +164,7 @@ class Settings(BaseSettings):
 
     @property
     def ai_configured(self) -> bool:
-        return bool(self.groq_api_key)
+        return bool(self.groq_api_keys)
 
     @property
     def max_upload_bytes(self) -> int:

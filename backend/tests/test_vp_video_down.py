@@ -14,6 +14,7 @@ from app.video_performance.models import VideoStatus, VtVideo
 from app.video_performance.platforms import InstagramVideoClient, YouTubeVideoClient
 from app.video_performance.sentiment import VideoSentimentAnalyzer
 from app.video_performance.tracker import VideoTracker
+from tests.fakes import sentiment_batch_response
 
 YT_ID = "downvidAAA1"
 IG_CODE = "DownReel01"
@@ -39,8 +40,8 @@ def instagram(request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, json={"business_discovery": {"id": "9", "username": IG_OWNER, "media": {"data": media}}})
 
 
-def llm(_request: httpx.Request) -> httpx.Response:
-    return httpx.Response(200, json={"choices": [{"message": {"content": '{"sentiment": "Neutral", "confidence": 0.5}'}}]})
+def llm(request: httpx.Request) -> httpx.Response:
+    return sentiment_batch_response(request, "Neutral", 0.5)
 
 
 def client_for(handler) -> httpx.AsyncClient:
@@ -88,7 +89,7 @@ def test_unavailable_video_is_marked_down_and_recovers(setup):
     asyncio.run(tracker.process_videos(list(ids)))
     (yt_status, yt_reason, yt_views), (ig_status, ig_reason, ig_views) = statuses(ids)
     assert yt_status == ig_status == VideoStatus.VIDEO_DOWN
-    assert "not found" in yt_reason and "not found" in ig_reason
+    assert "not found" in yt_reason and "no longer found" in ig_reason
     assert (yt_views, ig_views) == (500, 900)  # last known views are kept, never zeroed or invented
     assert videos_down(api) == before + 2
 

@@ -49,11 +49,16 @@ Return:
 - evidence_topics: up to 5 short topics actually present in the content."""
 
 
+PENDING_PREFIX = "AI analysis pending"
+
+
 @dataclass
 class AnalysisOutcome:
     result: AIAnalysisResult | None = None
     error: str | None = None
     issues: list[str] = field(default_factory=list)
+    model: str | None = None  # the Groq model that produced the result (main or fallback)
+    pending: bool = False  # Groq daily limit reached - analysed again automatically later
 
 
 def build_content_sample(profile: ChannelProfile) -> dict:
@@ -122,16 +127,16 @@ class ContentAnalyzer:
         last_error = "AI analysis failed"
         for attempt in range(1, attempts + 1):
             try:
-                raw = await self.llm.structured_completion(
+                completion = await self.llm.complete(
                     system=SYSTEM_PROMPT,
                     user=self._user_prompt(sample or {}),
                     schema_name="creator_content_analysis",
                     schema=analysis_json_schema(),
                 )
-                result = AIAnalysisResult.model_validate(raw)
+                result = AIAnalysisResult.model_validate(completion.data)
                 result, issues = self._apply_thresholds(result)
-                log_event(logger, logging.INFO, "ai_analysis_ok", creator_id=creator_id, attempt=attempt)
-                return AnalysisOutcome(result=result, issues=issues)
+                log_event(logger, logging.INFO, "ai_analysis_ok", creator_id=creator_id, attempt=attempt, model=completion.model)
+                return AnalysisOutcome(result=result, issues=issues, model=completion.model)
             except ValidationError as exc:
                 last_error = "AI response failed validation"
                 log_event(
@@ -139,6 +144,9 @@ class ContentAnalyzer:
                     creator_id=creator_id, attempt=attempt, errors=exc.error_count(),
                 )
             except LLMError as exc:
+                if exc.quota:
+                    log_event(logger, logging.WARNING, "ai_analysis_pending", creator_id=creator_id, reason=exc.message)
+                    return AnalysisOutcome(error=f"{PENDING_PREFIX}: {exc.message}", pending=True)
                 last_error = exc.message
                 log_event(logger, logging.WARNING, "ai_analysis_error", creator_id=creator_id, attempt=attempt, reason=exc.message)
                 if not exc.retryable:

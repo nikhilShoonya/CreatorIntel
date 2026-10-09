@@ -129,3 +129,14 @@ def llm_handler(request: httpx.Request) -> httpx.Response:
 
 def mock_client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def sentiment_batch_response(request: httpx.Request, sentiment: str = "Positive", confidence: float = 0.9) -> httpx.Response:
+    """Answer a batched video-sentiment request: one result per video id in the prompt."""
+    body = json.loads(request.content)
+    assert body["response_format"]["json_schema"]["name"] == "video_sentiment_batch"
+    videos = json.loads(body["messages"][1]["content"].split("\n", 1)[1])["videos"]
+    results = [{"id": v["id"], "sentiment": sentiment, "confidence": confidence} for v in videos]
+    return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"results": results})}}],
+                                     "usage": {"total_tokens": 100 + 50 * len(videos)}})
+

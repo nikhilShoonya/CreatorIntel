@@ -2,7 +2,8 @@ from fastapi import APIRouter
 
 from app.config.settings import get_settings
 from app.schemas.api import ConfigStatus
-from app.services.api_usage import ApiUsageOut, YouTubeQuota, instagram_usage, youtube_quota
+from app.services.api_usage import YouTubeQuota, instagram_usage, youtube_quota
+from app.services.groq_usage import AllUsageOut, groq_usage
 from app.services.meta_token import InstagramTokenStatus, instagram_token_status
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -34,10 +35,11 @@ def config_status() -> ConfigStatus:
     )
 
 
-@router.get("/config/api-usage", response_model=ApiUsageOut)
-def api_usage_today() -> ApiUsageOut:
-    """YouTube quota used today and Instagram (Meta) rate-limit usage. Never returns keys or tokens."""
-    return ApiUsageOut(youtube=youtube_quota(get_settings()), instagram=instagram_usage())
+@router.get("/config/api-usage", response_model=AllUsageOut)
+def api_usage_today() -> AllUsageOut:
+    """YouTube quota, Instagram (Meta) rate-limit usage and Groq AI usage. Never returns keys or tokens."""
+    settings = get_settings()
+    return AllUsageOut(youtube=youtube_quota(settings), instagram=instagram_usage(), groq=groq_usage(settings))
 
 
 @router.get("/config/youtube-quota", response_model=YouTubeQuota)

@@ -28,6 +28,8 @@ logger = logging.getLogger("creatorintel.api_usage")
 
 YOUTUBE = "youtube"
 INSTAGRAM = "instagram"
+GROQ = "groq"
+FACEBOOK = "facebook"
 META_WINDOW_MINUTES = 60  # Meta's platform rate limit is a rolling one-hour window
 QUOTA_TZ = ZoneInfo("America/Los_Angeles")  # YouTube quota resets at midnight Pacific Time
 FLUSH_EVERY_SECONDS = 20
@@ -49,6 +51,15 @@ def local_day(now: datetime | None = None) -> str:
 def record_instagram_call() -> None:
     """Count one Instagram Graph API request (every attempt)."""
     key = (local_day(), INSTAGRAM, "app")
+    with _lock:
+        entry = _pending.setdefault(key, [0, 0, None])
+        entry[0] += 1
+        entry[1] += 1
+
+
+def record_facebook_call() -> None:
+    """Count one Facebook Graph API request (every attempt)."""
+    key = (local_day(), FACEBOOK, "app")
     with _lock:
         entry = _pending.setdefault(key, [0, 0, None])
         entry[0] += 1
@@ -91,6 +102,55 @@ def record_meta_usage(response) -> None:
             "percent": round(max(percents, default=0.0), 1), "details": details,
             "regain": regain, "observed_at": utcnow(),
         }
+
+
+def groq_day(now: datetime | None = None) -> str:
+    """Groq usage is counted per UTC day."""
+    return (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date().isoformat()
+
+
+_groq_reported: dict[str, dict] = {}  # key fingerprint -> latest x-ratelimit-* reading from Groq
+
+
+def record_groq_call(api_key: str, tokens: int, *, limit_reached: bool = False) -> None:
+    """Count one Groq request (every attempt, including rate-limited ones) and the tokens it used."""
+    key = (groq_day(), GROQ, key_fingerprint(api_key))
+    with _lock:
+        entry = _pending.setdefault(key, [0, 0, None])
+        entry[0] += max(int(tokens or 0), 0)
+        entry[1] += 1
+        if limit_reached:
+            entry[2] = utcnow()
+
+
+def record_groq_headers(api_key: str, headers) -> None:
+    """Keep Groq's own daily request counter (x-ratelimit-*-requests = requests per day)."""
+    def number(name):
+        try:
+            return int(float(headers.get(name)))
+        except (TypeError, ValueError):
+            return None
+
+    limit, remaining = number("x-ratelimit-limit-requests"), number("x-ratelimit-remaining-requests")
+    if limit is None or remaining is None:
+        return
+    with _lock:
+        _groq_reported[key_fingerprint(api_key)] = {"limit": limit, "remaining": remaining, "observed_at": utcnow()}
+
+
+def groq_counts(api_key: str) -> tuple[int, int, dict | None]:
+    """(tokens today, requests today, latest Groq-reported request counter) for one key."""
+    fingerprint, day = key_fingerprint(api_key), groq_day()
+    with ReadSessionLocal() as db:
+        row = db.get(ApiUsage, (day, GROQ, fingerprint))
+    with _lock:
+        extra = _pending.get((day, GROQ, fingerprint), [0, 0, None])
+        reported = dict(_groq_reported[fingerprint]) if fingerprint in _groq_reported else None
+    tokens = (row.units if row else 0) + extra[0]
+    calls = (row.calls if row else 0) + extra[1]
+    if reported and groq_day(reported["observed_at"]) != day:
+        reported = None  # yesterday's reading
+    return tokens, calls, reported
 
 
 def key_fingerprint(key: str) -> str:
@@ -191,6 +251,7 @@ class YouTubeQuota(BaseModel):
 
 class InstagramUsage(BaseModel):
     calls_today: int
+    facebook_calls_today: int = 0  # same Meta app limit
     percent: float  # share of Meta's rolling one-hour limit (as reported by Meta)
     observed_at: datetime | None
     stale: bool  # no Graph API call in the last hour, so the hourly usage has reset
@@ -207,9 +268,11 @@ def instagram_usage() -> InstagramUsage:
     day = local_day()
     with ReadSessionLocal() as db:
         row = db.get(ApiUsage, (day, INSTAGRAM, "app"))
+        fb_row = db.get(ApiUsage, (day, FACEBOOK, "app"))
         status = db.get(ApiRateStatus, INSTAGRAM)
     with _lock:
         pending_calls = _pending.get((day, INSTAGRAM, "app"), [0, 0, None])[1]
+        fb_pending = _pending.get((day, FACEBOOK, "app"), [0, 0, None])[1]
         meta = dict(_meta_latest) if _meta_latest else None
     observed = meta["observed_at"] if meta else (as_utc(status.observed_at) if status else None)
     percent = meta["percent"] if meta else (status.percent if status else 0.0)
@@ -217,6 +280,7 @@ def instagram_usage() -> InstagramUsage:
     stale = observed is None or utcnow() - observed > timedelta(minutes=META_WINDOW_MINUTES)
     return InstagramUsage(
         calls_today=(row.calls if row else 0) + pending_calls,
+        facebook_calls_today=(fb_row.calls if fb_row else 0) + fb_pending,
         percent=0.0 if stale else percent,
         observed_at=observed,
         stale=stale,
@@ -290,3 +354,5 @@ class UsageFlusher:
                 await asyncio.to_thread(flush)
             except Exception as exc:
                 log_event(logger, logging.WARNING, "api_usage_flush_failed", reason=type(exc).__name__)
+
+
