@@ -65,6 +65,8 @@ def claim_videos(video_ids: list[int]) -> list[dict]:
                     "identifier": video.video_identifier,
                     "owner_username": video.owner_username,
                     "needs_sentiment": video.id not in analysed,
+                    # metrics were fetched successfully before (a later "not found" means the video went down)
+                    "seen": video.current_views is not None or video.likes is not None,
                 }
             )
         return rows

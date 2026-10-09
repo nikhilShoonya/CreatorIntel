@@ -46,15 +46,16 @@ export function formatDateTime(value: string | null | undefined): string {
   return date.toLocaleString("en-IN", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-export const PLATFORM_LABELS: Record<Platform, string> = {
+export const PLATFORM_LABELS: Record<Platform | "facebook", string> = {
   youtube: "YouTube",
   instagram: "Instagram",
+  facebook: "Facebook",
   invalid: "Invalid link",
   unsupported: "Unsupported",
 };
 
 export function platformLabel(value: string): string {
-  return PLATFORM_LABELS[value as Platform] ?? value;
+  return PLATFORM_LABELS[value as keyof typeof PLATFORM_LABELS] ?? value;
 }
 
 /** Only http(s) URLs are ever rendered as links. */

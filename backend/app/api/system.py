@@ -20,6 +20,7 @@ def config_status() -> ConfigStatus:
     return ConfigStatus(
         youtube_configured=settings.youtube_configured,
         instagram_configured=settings.instagram_configured,
+        facebook_configured=settings.facebook_configured,
         ai_configured=settings.ai_configured,
         ai_model=settings.groq_model,
         meta_api_version=settings.meta_api_version,

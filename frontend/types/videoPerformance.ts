@@ -1,4 +1,4 @@
-export type VpPlatform = "youtube" | "instagram";
+export type VpPlatform = "youtube" | "instagram" | "facebook";
 
 export type VpStatus = "Pending" | "Processing" | "Tracking" | "Paused" | "Completed" | "Partial" | "Failed" | "Unsupported" | "Video Down";
 
@@ -141,6 +141,7 @@ export interface VpDashboard {
   total_videos: number;
   youtube_videos: number;
   instagram_videos: number;
+  facebook_videos: number;
   total_current_views: number;
   views_gained_today: number;
   videos_checked_today: number;
@@ -148,6 +149,8 @@ export interface VpDashboard {
   new_videos_today: number;
   active_trackings: number;
   active_creators: number;
+  /** Deleted, private or otherwise unavailable on the platform. */
+  videos_down: number;
   sentiment_overall: SentimentCounts;
   sentiment_by_platform: GroupSentiment[];
   recent_sentiment: {
@@ -184,11 +187,14 @@ export interface VpTrendPoint {
   videos: number;
   youtube_videos: number;
   instagram_videos: number;
+  facebook_videos: number;
   new_videos: number;
   videos_checked: number;
 }
 
 export interface VpFilters {
+  /** Only the videos of one uploaded file (Uploads tab -> View data). */
+  upload_id?: string;
   q?: string;
   platform?: string;
   creator?: string;

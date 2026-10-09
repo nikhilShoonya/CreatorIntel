@@ -47,18 +47,25 @@ export function sortFromParam(value: string | null): VpSortKey | undefined {
   return SORT_KEYS.find((key) => key === value);
 }
 
+export function statusFromParam(value: string | null): VpStatus | undefined {
+  return STATUSES.find((status) => status === value);
+}
+
 interface Props {
+  /** Show only the videos of this uploaded file (table, filters and download all stay inside it). */
+  uploadId?: string;
   initialSort?: VpSortKey;
+  initialStatus?: VpStatus;
   refreshToken: number;
   onToast: (tone: "success" | "error", message: string) => void;
   onChanged: () => void;
 }
 
-export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Props) {
+export function VideoTable({ uploadId, initialSort, initialStatus, refreshToken, onToast, onChanged }: Props) {
   const [search, setSearch] = useState("");
   const [platform, setPlatform] = useState("");
   const [creator, setCreator] = useState("");
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState<string>(initialStatus ?? "");
   const [sort, setSort] = useState<{ key: VpSortKey; dir: "asc" | "desc" } | null>(initialSort ? { key: initialSort, dir: "desc" } : null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -72,6 +79,7 @@ export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Pr
   const q = useDebounce(search.trim(), 300);
   const filters: VpFilters = useMemo(
     () => ({
+      upload_id: uploadId,
       q: q || undefined,
       platform: platform || undefined,
       creator: creator || undefined,
@@ -79,7 +87,7 @@ export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Pr
       sort_by: sort?.key,
       sort_dir: sort?.dir,
     }),
-    [q, platform, creator, status, sort],
+    [uploadId, q, platform, creator, status, sort],
   );
   const token = refreshToken + localRefresh;
   const key = JSON.stringify({ filters, page, pageSize, token });
@@ -116,10 +124,10 @@ export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Pr
     }
   }
 
-  async function exportAs(kind: "excel" | "csv", layout: "performance" | "upload" = "performance") {
+  async function exportAs(kind: "excel" | "csv") {
     setExporting(true);
     try {
-      await vpApi.exportVideos(kind, filters, layout); // same filters and sort as the table
+      await vpApi.exportVideos(kind, filters); // same filters and sort as the table
     } catch (err) {
       onToast("error", err instanceof Error ? err.message : "Export failed");
     } finally {
@@ -149,7 +157,7 @@ export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Pr
             className="h-9 w-64 rounded-lg border border-line bg-white pl-9 pr-3 text-sm shadow-xs outline-none placeholder:text-slate-400 focus:border-accent focus:ring-2 focus:ring-indigo-100"
           />
         </div>
-        <Select label="Platform" value={platform} onChange={setFilter(setPlatform)} options={[{ value: "youtube", label: "YouTube" }, { value: "instagram", label: "Instagram" }]} className="w-36" />
+        <Select label="Platform" value={platform} onChange={setFilter(setPlatform)} options={[{ value: "youtube", label: "YouTube" }, { value: "instagram", label: "Instagram" }, { value: "facebook", label: "Facebook" }]} className="w-36" />
         <Select label="Creator" value={creator} onChange={setFilter(setCreator)} options={(facets.data?.creators ?? []).map((c) => ({ value: c, label: c }))} className="w-48" />
         <Select
           label="Status"
@@ -174,26 +182,26 @@ export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Pr
         )}
         <div className="ml-auto flex gap-2">
           <Menu
-            label="Export tracked videos"
-            width={265}
+            label={uploadId ? "Download this file's videos" : "Export tracked videos"}
+            width={160}
             trigger={(props) => (
               <Button variant="soft" disabled={!data || data.total === 0 || exporting} {...props}>
                 {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
-                Export
+                {uploadId ? "Download" : "Export"}
                 <ChevronDown size={14} />
               </Button>
             )}
             items={[
-              { label: "Full data (18 columns) · Excel", icon: <FileSpreadsheet size={15} className="text-emerald-600" />, onSelect: () => exportAs("excel") },
-              { label: "Full data (18 columns) · CSV", icon: <FileText size={15} className="text-slate-500" />, onSelect: () => exportAs("csv") },
-              { label: "Import list (4 columns) · Excel", icon: <FileSpreadsheet size={15} className="text-emerald-600" />, onSelect: () => exportAs("excel", "upload") },
-              { label: "Import list (4 columns) · CSV", icon: <FileText size={15} className="text-slate-500" />, onSelect: () => exportAs("csv", "upload") },
+              { label: "Excel", icon: <FileSpreadsheet size={15} className="text-emerald-600" />, onSelect: () => exportAs("excel") },
+              { label: "CSV", icon: <FileText size={15} className="text-slate-500" />, onSelect: () => exportAs("csv") },
             ]}
           />
-          <Button onClick={() => act(() => vpApi.retryFailed())} disabled={failedCount === 0} title="Retry every video whose last check failed">
-            <RotateCcw size={15} />
-            Retry failed{failedCount ? ` (${failedCount})` : ""}
-          </Button>
+          {!uploadId && (
+            <Button onClick={() => act(() => vpApi.retryFailed())} disabled={failedCount === 0} title="Retry every video whose last check failed">
+              <RotateCcw size={15} />
+              Retry failed{failedCount ? ` (${failedCount})` : ""}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -226,11 +234,17 @@ export function VideoTable({ initialSort, refreshToken, onToast, onChanged }: Pr
       {data && data.total === 0 ? (
         <EmptyState
           icon={<ListVideo size={22} />}
-          title={hasFilters ? "No videos match your filters" : "No tracked videos yet"}
-          description={hasFilters ? "Try a different search or clear the filters." : "Upload a video list, add a video, or track a creator to start."}
+          title={hasFilters ? "No videos match your filters" : uploadId ? "No videos from this file are tracked" : "No tracked videos yet"}
+          description={
+            hasFilters
+              ? "Try a different search or clear the filters."
+              : uploadId
+                ? "Its rows were invalid, or its videos were removed from tracking."
+                : "Upload a video list, add a video, or track a creator to start."
+          }
         />
       ) : (
-        <div className="table-scroll max-h-[68vh] overflow-auto border-t border-line">
+        <div className={`table-scroll overflow-auto border-t border-line ${uploadId ? "max-h-[55vh]" : "max-h-[68vh]"}`}>
           <table className="w-full min-w-[1500px] border-separate border-spacing-0 text-sm">
             <thead className="sticky top-0 z-20 text-left text-xs font-semibold text-slate-600">
               <tr>

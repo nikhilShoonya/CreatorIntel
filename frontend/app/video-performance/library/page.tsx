@@ -8,7 +8,7 @@ import { Button, Card } from "@/components/ui/controls";
 import { CreatorsPanel } from "@/components/video-performance/CreatorsPanel";
 import { UploadsPanel } from "@/components/video-performance/UploadsPanel";
 import { AddCreatorDialog, AddVideoDialog, UploadVideosDialog } from "@/components/video-performance/dialogs";
-import { sortFromParam, VideoTable } from "@/components/video-performance/VideoTable";
+import { sortFromParam, statusFromParam, VideoTable } from "@/components/video-performance/VideoTable";
 
 type Tab = "videos" | "creators" | "uploads";
 type Toast = { tone: "success" | "error"; message: string } | null;
@@ -84,7 +84,7 @@ export default function TrackingLibraryPage() {
             </Suspense>
           )}
           {tab === "creators" && <CreatorsPanel refreshToken={refreshToken} onToast={showToast} onChanged={bump} />}
-          {tab === "uploads" && <UploadsPanel refreshToken={refreshToken} />}
+          {tab === "uploads" && <UploadsPanel refreshToken={refreshToken} onToast={showToast} onChanged={bump} />}
         </div>
       </Card>
 
@@ -113,8 +113,10 @@ export default function TrackingLibraryPage() {
   );
 }
 
-/** Opens sorted when linked from the dashboard (e.g. ?sort=engagement_rate). */
-function VideoTableFromUrl(props: Omit<ComponentProps<typeof VideoTable>, "initialSort">) {
-  const sort = sortFromParam(useSearchParams().get("sort"));
-  return <VideoTable key={sort ?? "default"} initialSort={sort} {...props} />;
+/** Opens sorted / filtered when linked from the dashboard (e.g. ?sort=engagement_rate, ?status=Video%20Down). */
+function VideoTableFromUrl(props: Omit<ComponentProps<typeof VideoTable>, "initialSort" | "initialStatus">) {
+  const params = useSearchParams();
+  const sort = sortFromParam(params.get("sort"));
+  const status = statusFromParam(params.get("status"));
+  return <VideoTable key={`${sort ?? ""}:${status ?? ""}`} initialSort={sort} initialStatus={status} {...props} />;
 }

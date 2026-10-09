@@ -172,22 +172,23 @@ def test_full_video_tracking_flow(api):
     assert sorted(csv_rows[1:]) == sorted(excel_rows[1:])
     assert any(row[0].endswith("/Cabc12345/") and row[3] == "tradingtech31" for row in csv_rows[1:])
     assert all(row[3] == "" for row in csv_rows[1:] if row[2] == "YouTube")
-    assert sheet["A1"].fill.fgColor.rgb == "00394692"
+    # Shared export design: coloured header with filters, frozen header row, clickable links.
+    assert workbook.sheetnames == ["Video list", "About"]  # data first, so it stays re-uploadable
+    assert sheet["A1"].fill.fgColor.rgb == "004338CA" and sheet["A1"].font.bold
     assert sheet.freeze_panes == "A2"
     assert sheet.max_column == 4
-    assert sheet.column_dimensions["A"].width >= 58
-    assert sheet.column_dimensions["B"].width >= 28
-    assert sheet.row_dimensions[2].height >= 50
+    assert sheet.column_dimensions["A"].width >= 24
     assert sheet.auto_filter.ref == f"A1:D{sheet.max_row}"
     assert sheet["A2"].hyperlink is not None
     assert sheet["A2"].hyperlink.target == sheet["A2"].value
-    ig_row = next(row for row in sheet.iter_rows(min_row=2) if row[2].value == "Instagram" and row[3].value)
-    assert ig_row[3].font.color.rgb == "00007A4D"
+    ig_row = next(row for row in sheet.iter_rows(min_row=2) if row[2].value == "Instagram")
+    assert ig_row[2].font.color.rgb == "00C13584"  # platform in its brand colour
 
     report = api.get("/api/video-performance/exports/excel")
     report_csv = api.get("/api/video-performance/exports/csv")
     assert report.status_code == report_csv.status_code == 200
-    report_sheet = load_workbook(io.BytesIO(report.content)).active
+    report_book = load_workbook(io.BytesIO(report.content))
+    report_sheet = report_book.active
     report_csv_rows = list(csv.reader(io.StringIO(report_csv.content.decode("utf-8-sig"))))
     report_excel_rows = [[value if value is not None else "" for value in row] for row in report_sheet.values]
     assert report_csv_rows[0] == report_excel_rows[0]
@@ -197,13 +198,17 @@ def test_full_video_tracking_flow(api):
     )
     assert report_sheet.max_column == 18
     assert report_sheet["E1"].value == "Current Views"
-    assert report_sheet["A1"].fill.fgColor.rgb == "00394692"
-    assert report_sheet.freeze_panes == "A2"
+    assert report_sheet["A1"].fill.fgColor.rgb == "004338CA"
+    assert report_sheet.freeze_panes == "B2"  # header row + video title stay visible
     assert report_sheet.auto_filter.ref == f"A1:R{report_sheet.max_row}"
-    assert report_sheet.row_dimensions[2].height >= 50
-    assert report_sheet.column_dimensions["B"].width >= 58
-    assert report_sheet.column_dimensions["P"].width >= 22
+    assert report_sheet["P1"].value.startswith("Last Checked (") and report_sheet.column_dimensions["P"].width >= 19
     assert report_sheet["B2"].hyperlink.target == report_sheet["B2"].value
+    tracked_row = next(r for r in report_sheet.iter_rows(min_row=2) if r[13].value == "Tracking")
+    assert tracked_row[4].number_format == "#,##0"  # thousands separators on views
+    assert tracked_row[10].number_format == '0.00"%"'  # engagement rate
+    assert tracked_row[13].fill.fgColor.rgb == "00ECFDF5"  # status coloured like the app
+    assert hasattr(tracked_row[15].value, "year")  # a real date (sortable), not text
+    assert "Rows" in [c.value for c in report_book["About"]["A"]]
     assert all(value != "" for row in report_csv_rows[1:] for value in row)
     assert all(value != "" for row in report_excel_rows[1:] for value in row)
     unsupported_csv = next(row for row in report_csv_rows[1:] if "/Cnoowner1/" in row[1])

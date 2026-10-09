@@ -64,7 +64,7 @@ function useSubmit() {
 // ------------------------------------------------------------- add video
 export function AddVideoDialog({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: (m: string) => void }) {
   return (
-    <Dialog open={open} title="Add video" description="Track a single YouTube video or Instagram reel. Views are checked daily." onClose={onClose}>
+    <Dialog open={open} title="Add video" description="Track a single YouTube video, Instagram reel, or a video/reel on your Facebook Page. Views are checked daily." onClose={onClose}>
       {open && <AddVideoForm onClose={onClose} onSaved={onSaved} />}
     </Dialog>
   );
@@ -93,7 +93,7 @@ function AddVideoForm({ onClose, onSaved }: { onClose: () => void; onSaved: (m: 
   return (
     <form onSubmit={submit} className="space-y-4">
       <Field label="Video link">
-        <input className={input} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://www.youtube.com/watch?v=… or https://www.instagram.com/reel/…" required />
+        <input className={input} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://www.youtube.com/watch?v=…, https://www.instagram.com/reel/… or https://www.facebook.com/reel/…" required />
       </Field>
       <Field label="Creator name" hint="Optional - filled from the platform when available">
         <input className={input} value={creator} onChange={(e) => setCreator(e.target.value)} maxLength={300} />
@@ -373,7 +373,9 @@ function UploadForm({ onClose, onDone }: { onClose: () => void; onDone: () => vo
       <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
       <p className="text-xs text-muted">
         Columns: <strong>Video Link</strong> (required), Creator Name, Platform (optional - detected from the link), and for
-        Instagram reels a <strong>Username</strong> column with the reel owner&apos;s handle. Duplicate videos are skipped.
+        Instagram reels a <strong>Username</strong> column with the reel owner&apos;s handle. Facebook share links
+        (facebook.com/share/… and fb.watch/…) are converted to the real video link automatically; metrics are only available
+        for videos on your own Facebook Page. Duplicate videos are skipped.
       </p>
       <ErrorText error={error} />
       <div className="flex justify-end gap-2 pb-2">

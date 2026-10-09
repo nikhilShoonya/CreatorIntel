@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from app.utils.text import clean_text
+from app.video_performance.share_links import ShareResolution, resolution_note
 from app.video_performance.urls import ParsedVideo, parse_instagram_handle, parse_video_link
 
 ALLOWED = {".xlsx", ".xls", ".csv"}
@@ -119,7 +120,10 @@ def _map_columns(headers) -> dict:
     return columns
 
 
-def parse_import(filename: str, content: bytes, max_bytes: int) -> ImportResult:
+def parse_import(
+    filename: str, content: bytes, max_bytes: int, resolutions: dict[str, ShareResolution] | None = None
+) -> ImportResult:
+    """Read and validate the rows. `resolutions` maps Facebook share links in the file to their real video link."""
     grid = _read(_check_bytes(filename, content, max_bytes), content)
     frame, columns, header_row = grid, {"link": None}, 1
     # The header is the first row (within the first rows) with a video-link column; title rows above it are skipped.
@@ -149,7 +153,8 @@ def parse_import(filename: str, content: bytes, max_bytes: int) -> ImportResult:
         if len(result.rows) >= MAX_ROWS:
             raise ImportError_(f"File has more than {MAX_ROWS} rows. Split it into smaller files.")
 
-        parsed = parse_video_link(link)
+        resolution = (resolutions or {}).get(link)
+        parsed = parse_video_link(resolution.resolved_url if resolution and resolution.resolved_url else link)
         # Instagram needs the reel owner: explicit username column, the link itself, or a handle-like creator cell.
         owner = (
             (parse_instagram_handle(owner_cell) or parsed.owner_username or parse_instagram_handle(creator))
@@ -158,13 +163,17 @@ def parse_import(filename: str, content: bytes, max_bytes: int) -> ImportResult:
         )
         row = ImportRow(index, creator[:300] or None, parsed, owner, raw_link=link, raw_platform=platform_hint or None)
         if not parsed.ok:
-            row.status, row.message = "invalid", parsed.error
+            row.status, row.message = "invalid", (resolution.error if resolution and resolution.error else parsed.error)
         else:
-            if platform_hint and platform_hint not in (parsed.platform, "yt" if parsed.platform == "youtube" else "ig"):
-                row.message = f"Platform column says '{platform_hint}', link is {parsed.platform} - the link was used"
+            notes = [resolution_note(parsed.url)] if resolution and resolution.resolved_url else []
+            aliases = {"youtube": "yt", "instagram": "ig", "facebook": "fb"}
+            if platform_hint and platform_hint not in (parsed.platform, aliases.get(parsed.platform)):
+                notes.append(f"Platform column says '{platform_hint}', link is {parsed.platform} - the link was used")
             key = (parsed.platform, parsed.identifier)
             if key in seen:
-                row.status, row.message = "duplicate", "Duplicate of an earlier row in this file"
+                row.status = "duplicate"
+                notes.insert(0, "Duplicate of an earlier row in this file")
+            row.message = "; ".join(notes) or None
             seen.add(key)
         result.rows.append(row)
 

@@ -185,6 +185,7 @@ export interface UploadDetail extends UploadSummary {
 export interface ConfigStatus {
   youtube_configured: boolean;
   instagram_configured: boolean;
+  facebook_configured: boolean;
   ai_configured: boolean;
   ai_model: string;
   meta_api_version: string;

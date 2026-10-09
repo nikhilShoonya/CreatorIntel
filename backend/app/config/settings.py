@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # Instagram Professional account ID used as the "viewer" for Business Discovery.
     # Optional: discovered automatically from the access token's Facebook Pages when empty.
     meta_ig_business_account_id: str = ""
+    # Facebook Page whose videos/reels Video Performance can track. META_ACCESS_TOKEN must be a System User
+    # token with this Page assigned; the Page access token is derived from it at runtime (never stored).
+    meta_facebook_page_id: str = ""
 
     # Groq (OpenAI-compatible Chat Completions API). The default model supports
     # strict JSON-schema structured output.
@@ -109,6 +112,10 @@ class Settings(BaseSettings):
     @property
     def youtube_configured(self) -> bool:
         return bool(self.youtube_api_keys)
+
+    @property
+    def facebook_configured(self) -> bool:
+        return bool(self.meta_access_token.strip() and self.meta_facebook_page_id.strip())
 
     @property
     def instagram_configured(self) -> bool:

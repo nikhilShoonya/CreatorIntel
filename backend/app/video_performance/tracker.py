@@ -25,6 +25,7 @@ from app.video_performance.models import JobType
 from app.video_performance.platforms import (
     ChannelInfo,
     DiscoveredVideo,
+    FacebookVideoClient,
     InstagramVideoClient,
     PlatformError,
     VideoMetrics,
@@ -45,11 +46,13 @@ class VideoTracker:
         *,
         youtube: YouTubeVideoClient | None = None,
         instagram: InstagramVideoClient | None = None,
+        facebook: FacebookVideoClient | None = None,
         sentiment: VideoSentimentAnalyzer | None = None,
     ):
         self.settings = settings or get_settings()
         self.youtube = youtube or YouTubeVideoClient(self.settings)
         self.instagram = instagram or InstagramVideoClient(self.settings)
+        self.facebook = facebook or FacebookVideoClient(self.settings)
         self.sentiment = sentiment or VideoSentimentAnalyzer(self.settings)
         self._ai_semaphore = asyncio.Semaphore(3)
         self._job_locks = {JobType.METRICS_REFRESH: asyncio.Lock(), JobType.CREATOR_DISCOVERY: asyncio.Lock()}
@@ -153,6 +156,10 @@ class VideoTracker:
         for owner, owner_rows in by_owner.items():
             await self._instagram_owner(owner, owner_rows, results)
 
+        facebook_rows = [r for r in rows if r["platform"] == "facebook"]
+        if facebook_rows:
+            await asyncio.gather(*(self._facebook_video(row, results) for row in facebook_rows))
+
         succeeded = failed = 0
         to_analyse: list[int] = []
         for row in rows:
@@ -185,6 +192,22 @@ class VideoTracker:
             videos=len(rows), succeeded=succeeded, failed=failed, duration_s=f"{time.perf_counter() - started:.1f}",
         )
         return succeeded, failed
+
+    async def _facebook_video(self, row: dict, results: dict) -> None:
+        try:
+            results[row["id"]] = await self.facebook.video(row["identifier"])
+        except PlatformError as exc:
+            if exc.code == PlatformError.NOT_FOUND and not row.get("seen"):
+                # Never seen before: the ID may simply not be on our Page (Meta returns the same error).
+                exc = PlatformError(
+                    PlatformError.UNSUPPORTED,
+                    "Facebook video could not be resolved with the configured Page/API access. Only videos posted "
+                    "on your Facebook Page can be tracked (or the video is deleted/private)",
+                )
+            results[row["id"]] = exc
+        except Exception:
+            logger.exception("vt_facebook_video_crashed video_id=%s", row["id"])
+            results[row["id"]] = PlatformError(PlatformError.API, "Unexpected error while contacting Facebook")
 
     async def _instagram_owner(self, owner: str | None, rows: list[dict], results: dict) -> None:
         if not owner:

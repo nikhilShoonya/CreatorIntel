@@ -13,7 +13,7 @@ interface DialogProps {
   onClose: () => void;
   children?: ReactNode;
   footer?: ReactNode;
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "md" | "lg" | "xl";
 }
 
 /** Centered modal used for forms and confirmations. */
@@ -42,7 +42,7 @@ export function Dialog({ open, title, description, onClose, children, footer, si
       <div
         ref={panelRef}
         className={`animate-modal-in relative flex max-h-[90vh] w-full flex-col rounded-2xl bg-white shadow-2xl shadow-slate-900/20 ${
-          size === "sm" ? "max-w-md" : size === "lg" ? "max-w-3xl" : "max-w-lg"
+          size === "sm" ? "max-w-md" : size === "lg" ? "max-w-3xl" : size === "xl" ? "max-w-[min(1500px,96vw)]" : "max-w-lg"
         }`}
       >
         <header className="flex items-start justify-between gap-4 px-6 pb-2 pt-5">

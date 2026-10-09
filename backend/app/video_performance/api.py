@@ -12,7 +12,7 @@ from fastapi.responses import Response
 
 from app.config.settings import get_settings
 from app.utils.logging import log_event
-from app.utils.spreadsheet import table_bytes
+from app.utils.spreadsheet import local_time, table_bytes, tz_label
 from app.utils.time import as_utc, utcnow
 from app.utils.text import clean_text
 from app.utils.url_parser import parse_channel_link
@@ -42,6 +42,7 @@ from app.video_performance.schemas import (
 )
 from app.video_performance.scheduler import VideoTrackingScheduler
 from app.video_performance.tracker import VideoTracker
+from app.video_performance.share_links import ShareLinkResolver, get_share_resolver, is_share_link
 from app.video_performance.urls import parse_instagram_handle, parse_video_link
 
 logger = logging.getLogger("creatorintel.video_performance.api")
@@ -70,14 +71,37 @@ def _username(value: str | None) -> str | None:
     return handle
 
 
+def _share_resolver(request: Request) -> ShareLinkResolver:
+    return getattr(request.app.state, "share_resolver", None) or get_share_resolver()
+
+
+async def _parse_link(link: str, resolver: ShareLinkResolver):
+    """parse_video_link, after turning a Facebook share link into its real video link."""
+    if is_share_link(link):
+        resolution = await resolver.resolve(link.strip())
+        if not resolution.resolved_url:
+            raise HTTPException(status_code=422, detail=resolution.error)
+        link = resolution.resolved_url
+    parsed = parse_video_link(link)
+    if not parsed.ok:
+        raise HTTPException(status_code=422, detail=parsed.error)
+    return parsed
+
+
 # ---------------------------------------------------------------- uploads
 @router.post("/uploads", response_model=UploadResultOut, status_code=201)
-async def upload_videos(file: UploadFile = File(...), tracker: VideoTracker = Depends(get_tracker)):
+async def upload_videos(
+    request: Request, file: UploadFile = File(...), tracker: VideoTracker = Depends(get_tracker)
+):
     settings = get_settings()
     content = await file.read(settings.max_upload_bytes + 1)
     name = Path(file.filename or "videos").name[:200]
     try:
         result = await run_in_threadpool(parse_import, name, content, settings.max_upload_bytes)
+        share_links = [r.raw_link for r in result.rows if r.raw_link and is_share_link(r.raw_link)]
+        if share_links:  # resolve them, then re-read so duplicates are detected on the real video IDs
+            resolutions = await _share_resolver(request).resolve_many(share_links)
+            result = await run_in_threadpool(parse_import, name, content, settings.max_upload_bytes, resolutions)
     except ImportError_ as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -108,6 +132,7 @@ def list_uploads():
     return queries.uploads()
 
 
+_PLATFORM_LABELS = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook"}
 _ROW_LABELS = {"added": "Added", "already_tracked": "Already tracked", "duplicate": "Duplicate", "invalid": "Invalid"}
 
 
@@ -119,6 +144,26 @@ def upload_rows(upload_id: str):
         raise HTTPException(status_code=404, detail="Upload not found")
     upload, rows = found
     return UploadRowsOut(upload=upload, rows=rows)
+
+
+def _upload_scope(upload_id: str | None) -> list[int] | None:
+    """The tracked videos of one uploaded file (None = no upload filter)."""
+    if not upload_id:
+        return None
+    ids = queries.upload_video_ids(upload_id)
+    if ids is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    return ids
+
+
+def _TZ_LABEL() -> str:
+    return tz_label(get_settings().video_tracking_timezone)
+
+
+def _local_text(value) -> str:
+    """'08 Oct 2026, 15:55 IST' for the About sheet."""
+    when = local_time(as_utc(value), get_settings().video_tracking_timezone)
+    return f"{when:%d %b %Y, %H:%M} {_TZ_LABEL()}" if when else "-"
 
 
 def _file_response(content: bytes, kind: str, stem: str) -> Response:
@@ -136,7 +181,10 @@ async def export_upload_rows(upload_id: str, format: Literal["csv", "excel"] = "
     upload, rows = found
     table = [[r.row_number, r.creator_name, r.platform, r.video_link, r.username, _ROW_LABELS.get(r.status, r.status), r.message] for r in rows]
     columns = ["Row", "Creator Name", "Platform", "Video Link", "Username", "Result", "Notes"]
-    content = await run_in_threadpool(table_bytes, columns, table, "csv" if format == "csv" else "excel", "Uploaded rows")
+    content = await run_in_threadpool(
+        table_bytes, columns, table, "csv" if format == "csv" else "excel", "Uploaded rows",
+        {"Source file": upload.filename, "Uploaded": _local_text(upload.created_at)},
+    )
     return _file_response(content, "csv" if format == "csv" else "excel", f"{Path(upload.filename).stem[:80] or 'videos'}_rows")
 
 
@@ -145,32 +193,47 @@ async def export_videos(
     kind: Literal["excel", "csv"],
     layout: Literal["performance", "upload"] = "performance",
     q: str | None = Query(default=None, max_length=200),
-    platform: Literal["youtube", "instagram"] | None = None,
+    platform: Literal["youtube", "instagram", "facebook"] | None = None,
     creator: str | None = Query(default=None, max_length=300),
     status: str | None = Query(default=None, max_length=20),
     sort_by: queries.SortKey | None = None,
     sort_dir: Literal["asc", "desc"] = "desc",
+    upload_id: str | None = Query(default=None, max_length=32),
 ):
     """Tracked videos (respecting the table's filters) as a report or import-ready list."""
+    video_ids = await run_in_threadpool(_upload_scope, upload_id)
     filters = queries.VideoFilters(q=q or None, platform=platform, creator=creator or None, status=status,
-                                   sort_by=sort_by, sort_dir=sort_dir)
+                                   sort_by=sort_by, sort_dir=sort_dir, video_ids=video_ids)
     videos = await run_in_threadpool(queries.export_videos, filters)
+    stem = "video_performance"
+    info: dict[str, object] = {"Generated": _local_text(utcnow())}
+    if upload_id:
+        uploaded = await run_in_threadpool(queries.upload_rows, upload_id)
+        if uploaded:
+            stem = f"{Path(uploaded[0].filename).stem[:80] or 'upload'}_tracking"
+            info["Source file"] = f"{uploaded[0].filename} (uploaded {_local_text(uploaded[0].created_at)})"
+    applied = {"Search": q, "Platform": platform, "Creator": creator, "Status": status,
+               "Sorted by": f"{sort_by} ({sort_dir})" if sort_by else None}
+    info["Filters"] = ", ".join(f"{k}: {v}" for k, v in applied.items() if v) or "None (all videos)"
     if layout == "upload":
         columns = ["Video Link", "Creator Name", "Platform", "Username"]
         table = [
-            [v.video_url, v.creator_name, "YouTube" if v.platform == "youtube" else "Instagram",
+            [v.video_url, v.creator_name, _PLATFORM_LABELS.get(v.platform, v.platform),
              v.owner_username if v.platform == "instagram" else None]
             for v in videos
         ]
-        content = await run_in_threadpool(table_bytes, columns, table, kind, "Video list", True)
+        info["How to use"] = "Edit if needed, then upload it again in Tracking Library > Upload Excel"
+        content = await run_in_threadpool(table_bytes, columns, table, kind, "Video list", info)
         return _file_response(content, kind, f"video_list_upload_ready_{utcnow().strftime('%Y%m%d_%H%M')}")
     columns = [
         "Video", "Video URL", "Platform", "Creator", "Current Views", "Previous Views", "Views Gained", "Growth %",
         "Likes", "Comments", "Engagement Rate (%)", "Sentiment", "Sentiment Confidence", "Tracking Status", "Notes",
-        "Last Checked (UTC)", "Published (UTC)", "Source",
+        f"Last Checked ({_TZ_LABEL()})", f"Published ({_TZ_LABEL()})", "Source",
     ]
+    tz_name = get_settings().video_tracking_timezone
+
     def fmt(value):
-        return as_utc(value).strftime("%Y-%m-%d %H:%M") if value else None
+        return local_time(as_utc(value), tz_name) if value else None
 
     def shown(value, missing="N/A"):
         """Use the library's visible placeholder without changing real zero values."""
@@ -178,7 +241,7 @@ async def export_videos(
 
     table = [
         [
-            VideoOut.model_validate(v).display_title, v.video_url, "YouTube" if v.platform == "youtube" else "Instagram",
+            VideoOut.model_validate(v).display_title, v.video_url, _PLATFORM_LABELS.get(v.platform, v.platform),
             shown(v.creator_name), shown(v.current_views), shown(v.previous_views, "-"),
             shown(v.views_gained, "-"), shown(v.growth_pct, "-"), shown(v.likes), shown(v.comments),
             shown(v.engagement_rate), shown(v.sentiment), shown(v.sentiment_confidence), v.status,
@@ -187,8 +250,9 @@ async def export_videos(
         ]
         for v in videos
     ]
-    content = await run_in_threadpool(table_bytes, columns, table, kind, "Tracked videos", True)
-    return _file_response(content, kind, f"video_performance_{utcnow().strftime('%Y%m%d_%H%M')}")
+    info["Times"] = f"Shown in {tz_name} ({_TZ_LABEL()})"
+    content = await run_in_threadpool(table_bytes, columns, table, kind, "Tracked videos", info)
+    return _file_response(content, kind, f"{stem}_{utcnow().strftime('%Y%m%d_%H%M')}")
 
 
 # ----------------------------------------------------------------- videos
@@ -197,19 +261,20 @@ def list_videos(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10),
     q: str | None = Query(default=None, max_length=200),
-    platform: Literal["youtube", "instagram"] | None = None,
+    platform: Literal["youtube", "instagram", "facebook"] | None = None,
     creator: str | None = Query(default=None, max_length=300),
     creator_id: int | None = None,
     status: str | None = Query(default=None, max_length=20),
     sort_by: queries.SortKey | None = None,
     sort_dir: Literal["asc", "desc"] = "desc",
+    upload_id: str | None = Query(default=None, max_length=32),
 ):
     if page_size not in PAGE_SIZES:
         raise HTTPException(status_code=422, detail=f"page_size must be one of {PAGE_SIZES}")
     if status and status not in VideoStatus.ALL:
         raise HTTPException(status_code=422, detail="Unknown status")
     filters = queries.VideoFilters(q=q or None, platform=platform, creator=creator or None, creator_id=creator_id,
-                                   status=status, sort_by=sort_by, sort_dir=sort_dir)
+                                   status=status, sort_by=sort_by, sort_dir=sort_dir, video_ids=_upload_scope(upload_id))
     items, total, total_pages, counts = queries.list_videos(filters, page, page_size)
     return VideoListOut(items=items, total=total, page=min(page, total_pages), page_size=page_size,
                         total_pages=total_pages, status_counts=counts)
@@ -231,10 +296,8 @@ def get_video(video_id: int):
 
 
 @router.post("/videos", response_model=VideoOut, status_code=201)
-async def add_video(body: VideoCreateIn, tracker: VideoTracker = Depends(get_tracker)):
-    parsed = parse_video_link(body.video_url)
-    if not parsed.ok:
-        raise HTTPException(status_code=422, detail=parsed.error)
+async def add_video(body: VideoCreateIn, request: Request, tracker: VideoTracker = Depends(get_tracker)):
+    parsed = await _parse_link(body.video_url, _share_resolver(request))
     owner = _username(body.instagram_username) if parsed.platform == "instagram" else None
     creator = clean_text(body.creator_name)[:300] if body.creator_name else None
     if parsed.platform == "instagram" and not owner:
@@ -248,12 +311,12 @@ async def add_video(body: VideoCreateIn, tracker: VideoTracker = Depends(get_tra
 
 
 @router.put("/videos/{video_id}", response_model=VideoOut)
-async def update_video(video_id: int, body: VideoUpdateIn, tracker: VideoTracker = Depends(get_tracker)):
+async def update_video(
+    video_id: int, body: VideoUpdateIn, request: Request, tracker: VideoTracker = Depends(get_tracker)
+):
     parsed = None
     if body.video_url is not None:
-        parsed = parse_video_link(body.video_url)
-        if not parsed.ok:
-            raise HTTPException(status_code=422, detail=parsed.error)
+        parsed = await _parse_link(body.video_url, _share_resolver(request))
     owner = None
     if body.instagram_username is not None:
         owner = _username(body.instagram_username) or ""

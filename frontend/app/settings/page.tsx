@@ -106,6 +106,13 @@ export default function SettingsPage() {
             />
             {config.instagram_configured && <TokenStatusCard />}
             {config.instagram_configured && <InstagramUsageCard />}
+            <Integration
+              icon={<PlatformIcon platform="facebook" size={22} />}
+              name={`Facebook Graph API (${config.meta_api_version})`}
+              configured={config.facebook_configured}
+              detail="Videos and reels on your own Facebook Page (Video Performance)."
+              envVar="META_FACEBOOK_PAGE_ID"
+            />
           </div>
         ) : (
           !error && <div className="h-40 animate-pulse" />

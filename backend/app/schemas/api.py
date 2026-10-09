@@ -157,6 +157,7 @@ class ActionResponse(BaseModel):
 class ConfigStatus(BaseModel):
     youtube_configured: bool
     instagram_configured: bool
+    facebook_configured: bool = False
     ai_configured: bool
     ai_model: str
     meta_api_version: str

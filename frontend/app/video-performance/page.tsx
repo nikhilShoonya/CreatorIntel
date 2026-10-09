@@ -24,6 +24,7 @@ import {
   TrendingUp,
   Trophy,
   Users,
+  VideoOff,
   Zap,
 } from "lucide-react";
 
@@ -80,7 +81,7 @@ export default function VideoPerformanceDashboard() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-ink">Video Performance</h1>
-          <p className="text-sm text-muted">Track, analyze and get insights on your YouTube &amp; Instagram videos</p>
+          <p className="text-sm text-muted">Track, analyze and get insights on your YouTube, Instagram &amp; Facebook videos</p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <RangeSelect value={days} onChange={(value) => setRange(String(value))} />
@@ -206,6 +207,7 @@ function DashboardBody({ data, notify }: { data: VpDashboard; notify: Notify }) 
 
   return (
     <>
+      {data.videos_down > 0 && <VideosDownAlert count={data.videos_down} />}
       <KpiRow data={data} />
 
       <div className="grid gap-5 xl:grid-cols-12">
@@ -244,6 +246,27 @@ function DashboardBody({ data, notify }: { data: VpDashboard; notify: Notify }) 
 
       <HistoryDialog videoId={historyId} onClose={() => setHistoryId(null)} />
     </>
+  );
+}
+
+function VideosDownAlert({ count }: { count: number }) {
+  return (
+    <div role="status" className="flex flex-wrap items-center gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+      <VideoOff size={18} className="shrink-0" />
+      <p className="flex-1">
+        <span className="font-semibold">
+          {count} video{count === 1 ? " is" : "s are"} down.
+        </span>{" "}
+        The platform no longer returns {count === 1 ? "it" : "them"} (deleted, made private or a wrong link). Views recorded earlier
+        are kept, and the daily check keeps looking in case {count === 1 ? "it comes" : "they come"} back.
+      </p>
+      <Link
+        href={`/video-performance/library?status=${encodeURIComponent("Video Down")}`}
+        className="inline-flex h-8 items-center rounded-lg border border-red-200 bg-white px-3 text-xs font-medium text-red-700 hover:bg-red-100/60"
+      >
+        View down videos
+      </Link>
+    </div>
   );
 }
 
@@ -310,7 +333,7 @@ function KpiRow({ data }: { data: VpDashboard }) {
   const growth = data.views_growth_pct;
 
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
+    <div className={`grid grid-cols-2 gap-3 md:grid-cols-4 ${data.facebook_videos > 0 ? "xl:grid-cols-8" : "xl:grid-cols-7"}`}>
       <Kpi
         label="Total Tracked Videos"
         value={formatNumber(data.total_videos)}
@@ -342,6 +365,18 @@ function KpiRow({ data }: { data: VpDashboard }) {
         sparkColor="#ec4899"
         sparkLabel="Instagram videos tracked per day"
       />
+      {data.facebook_videos > 0 && (
+        <Kpi
+          label="Facebook Videos"
+          value={formatNumber(data.facebook_videos)}
+          icon={<PlatformIcon platform="facebook" size={18} />}
+          tone="bg-blue-50"
+          sub={share(data.facebook_videos)}
+          spark={series((p) => p.facebook_videos)}
+          sparkColor="#1877f2"
+          sparkLabel="Facebook videos tracked per day"
+        />
+      )}
       <Kpi
         label="Total Current Views"
         value={formatCompact(data.total_current_views)}
@@ -474,6 +509,7 @@ function PlatformSelect({ value, onChange, label }: { value: string; onChange: (
         <option value="">All Platforms</option>
         <option value="youtube">YouTube</option>
         <option value="instagram">Instagram</option>
+        <option value="facebook">Facebook</option>
       </select>
       <ChevronDown size={14} className="pointer-events-none absolute right-2.5 text-slate-500" />
     </label>
@@ -607,7 +643,19 @@ function Thumbnail({ url, platform, title }: { url: string | null; platform: VpP
   );
 }
 
-function VideoCell({ title, url, platform, thumbnail }: { title: string; url: string; platform: VpPlatform; thumbnail: string | null }) {
+function VideoCell({
+  title,
+  url,
+  platform,
+  thumbnail,
+  down = false,
+}: {
+  title: string;
+  url: string;
+  platform: VpPlatform;
+  thumbnail: string | null;
+  down?: boolean;
+}) {
   const href = safeHref(url);
   return (
     <div className="flex min-w-0 items-center gap-2.5">
@@ -615,13 +663,23 @@ function VideoCell({ title, url, platform, thumbnail }: { title: string; url: st
       <span className="shrink-0">
         <PlatformIcon platform={platform} size={15} />
       </span>
-      {href ? (
-        <a href={href} target="_blank" rel="noopener noreferrer" title={title} className="line-clamp-2 text-[13px] font-medium leading-snug text-slate-800 hover:text-accent">
-          {title}
-        </a>
-      ) : (
-        <span className="line-clamp-2 text-[13px] font-medium leading-snug text-slate-800">{title}</span>
-      )}
+      <div className="min-w-0">
+        {href ? (
+          <a href={href} target="_blank" rel="noopener noreferrer" title={title} className="line-clamp-2 text-[13px] font-medium leading-snug text-slate-800 hover:text-accent">
+            {title}
+          </a>
+        ) : (
+          <span className="line-clamp-2 text-[13px] font-medium leading-snug text-slate-800">{title}</span>
+        )}
+        {down && (
+          <span
+            className="mt-0.5 inline-flex items-center gap-1 rounded bg-red-50 px-1.5 py-px text-[11px] font-medium text-red-700 ring-1 ring-inset ring-red-200"
+            title="Deleted, private or removed on the platform. Showing the last known numbers."
+          >
+            <VideoOff size={11} aria-hidden="true" /> Video Down
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -707,7 +765,7 @@ function RankingCard({
                 <tr key={video.id} className="border-b border-line last:border-0">
                   <td className="px-2 py-2.5 text-sm tabular-nums text-slate-500">{index + 1}</td>
                   <td className="px-2 py-2.5">
-                    <VideoCell title={video.display_title} url={video.video_url} platform={video.platform} thumbnail={video.thumbnail_url} />
+                    <VideoCell title={video.display_title} url={video.video_url} platform={video.platform} thumbnail={video.thumbnail_url} down={video.status === "Video Down"} />
                   </td>
                   <td className="px-2 py-2.5">
                     <CreatorCell name={video.creator_name} platform={video.platform} />
@@ -810,7 +868,7 @@ function LatestDetectedCard({ videos, actions }: { videos: VpVideo[]; actions: R
           {shown.map((video) => (
             <li key={video.id} className="flex items-center gap-3 py-2.5">
               <div className="min-w-0 flex-1">
-                <VideoCell title={video.display_title} url={video.video_url} platform={video.platform} thumbnail={video.thumbnail_url} />
+                <VideoCell title={video.display_title} url={video.video_url} platform={video.platform} thumbnail={video.thumbnail_url} down={video.status === "Video Down"} />
                 <p className="mt-0.5 truncate pl-[87px] text-xs text-muted">
                   {video.creator_name ?? "Unknown creator"} · found {formatChecked(video.discovered_at)}
                 </p>

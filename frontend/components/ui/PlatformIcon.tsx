@@ -28,9 +28,19 @@ function YouTubeIcon({ size }: { size: number }) {
   );
 }
 
+function FacebookIcon({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="11" fill="#1877F2" />
+      <path d="M13.4 19.5v-6h2l.3-2.4h-2.3V9.6c0-.7.2-1.2 1.2-1.2h1.2V6.3c-.2 0-.9-.1-1.8-.1-1.8 0-3 1.1-3 3.1v1.8H9v2.4h2v6z" fill="#fff" />
+    </svg>
+  );
+}
+
 export function PlatformIcon({ platform, size = 18 }: { platform: Platform | string; size?: number }) {
   if (platform === "instagram") return <InstagramIcon size={size} />;
   if (platform === "youtube") return <YouTubeIcon size={size} />;
+  if (platform === "facebook") return <FacebookIcon size={size} />;
   if (platform === "unsupported") return <CircleSlash size={size - 2} className="text-slate-400" aria-hidden="true" />;
   return <Link2Off size={size - 2} className="text-slate-400" aria-hidden="true" />;
 }

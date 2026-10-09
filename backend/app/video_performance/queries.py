@@ -34,6 +34,8 @@ from app.video_performance.schemas import (
     youtube_thumbnail,
 )
 from app.video_performance.timeutil import local_day_start_utc, tracking_tz
+from app.video_performance.share_links import resolved_link_from_note
+from app.video_performance.urls import parse_video_link
 
 SortKey = Literal["current_views", "views_gained", "growth_pct", "engagement_rate", "last_checked_at", "created_at", "published_at"]
 _ACTIVE = (VideoStatus.PENDING, VideoStatus.PROCESSING, VideoStatus.TRACKING, VideoStatus.PARTIAL, VideoStatus.FAILED)
@@ -48,6 +50,7 @@ class VideoFilters:
     status: str | None = None
     sort_by: SortKey | None = None
     sort_dir: Literal["asc", "desc"] = "desc"
+    video_ids: list[int] | None = None  # only these videos, shown in this order (e.g. one uploaded file)
 
 
 def _escape(value: str) -> str:
@@ -74,6 +77,8 @@ def _video_query(filters: VideoFilters):
         stmt = stmt.where(VtVideo.creator_name == filters.creator)
     if filters.creator_id:
         stmt = stmt.where(VtVideo.creator_id == filters.creator_id)
+    if filters.video_ids is not None:
+        stmt = stmt.where(VtVideo.id.in_(filters.video_ids or [-1]))
     status_stmt = stmt  # counts per status respect the other filters
     if filters.status:
         stmt = stmt.where(VtVideo.status == filters.status)
@@ -82,6 +87,8 @@ def _video_query(filters: VideoFilters):
         column = getattr(VtVideo, filters.sort_by)
         ordered = column.asc() if filters.sort_dir == "asc" else column.desc()
         stmt = stmt.order_by(ordered.nulls_last(), VtVideo.id.desc())
+    elif filters.video_ids:
+        stmt = stmt.order_by(case({vid: n for n, vid in enumerate(filters.video_ids)}, value=VtVideo.id, else_=len(filters.video_ids)))
     else:
         stmt = stmt.order_by(VtVideo.created_at.desc(), VtVideo.id.desc())
     return stmt, status_stmt
@@ -175,6 +182,35 @@ def uploads(limit: int = 50) -> list[UploadOut]:
         return [_upload_out(u) for u in db.scalars(select(VtUpload).order_by(VtUpload.created_at.desc()).limit(limit))]
 
 
+def upload_video_ids(upload_id: str) -> list[int] | None:
+    """Tracked videos that came from one uploaded file, in the file's row order (None = unknown upload).
+
+    Rows keep the link exactly as uploaded, so each is matched to its video the same way the upload
+    matched it (added, already tracked or a duplicate row all point to the same tracked video).
+    """
+    with read_scope() as db:
+        if db.get(VtUpload, upload_id) is None:
+            return None
+        rows = db.execute(
+            select(VtUploadRow.video_link, VtUploadRow.message)
+            .where(VtUploadRow.upload_id == upload_id, VtUploadRow.status != "invalid")
+            .order_by(VtUploadRow.row_number)
+        ).all()
+        keys: list[tuple[str, str]] = []
+        for link, message in rows:
+            # A Facebook share link is stored as uploaded; its note records the real video link it resolved to.
+            parsed = parse_video_link(resolved_link_from_note(message) or link)
+            if parsed.ok and (parsed.platform, parsed.identifier) not in keys:
+                keys.append((parsed.platform, parsed.identifier))
+        found: dict[tuple[str, str], int] = {}
+        for start in range(0, len(keys), 200):
+            chunk = keys[start : start + 200]
+            condition = or_(*[(VtVideo.platform == p) & (VtVideo.video_identifier == i) for p, i in chunk])
+            for vid, platform, identifier in db.execute(select(VtVideo.id, VtVideo.platform, VtVideo.video_identifier).where(condition)):
+                found[(platform, identifier)] = vid
+    return [found[key] for key in keys if key in found]
+
+
 def upload_rows(upload_id: str) -> tuple[UploadOut, list[UploadRowOut]] | None:
     with read_scope() as db:
         upload = db.get(VtUpload, upload_id)
@@ -196,20 +232,22 @@ def dashboard_totals() -> dict:
                 func.count(VtVideo.id),
                 func.coalesce(func.sum(case((VtVideo.platform == "youtube", 1), else_=0)), 0),
                 func.coalesce(func.sum(case((VtVideo.platform == "instagram", 1), else_=0)), 0),
+                func.coalesce(func.sum(case((VtVideo.platform == "facebook", 1), else_=0)), 0),
                 func.coalesce(func.sum(VtVideo.current_views), 0),
                 func.coalesce(func.sum(case((VtVideo.last_checked_at >= day_start, VtVideo.views_gained), else_=0)), 0),
                 func.coalesce(func.sum(case((VtVideo.last_checked_at >= day_start, 1), else_=0)), 0),
                 func.coalesce(func.sum(case((and_discovered(week_ago), 1), else_=0)), 0),
                 func.coalesce(func.sum(case((and_discovered(day_start), 1), else_=0)), 0),
                 func.coalesce(func.sum(case((VtVideo.status.in_(_ACTIVE), 1), else_=0)), 0),
+                func.coalesce(func.sum(case((VtVideo.status == VideoStatus.VIDEO_DOWN, 1), else_=0)), 0),
             )
         ).one()
         active_creators = db.scalar(
             select(func.count(VtCreator.id)).where(VtCreator.enabled.is_(True), VtCreator.status == CreatorTrackingStatus.ACTIVE)
         ) or 0
     keys = (
-        "total_videos", "youtube_videos", "instagram_videos", "total_current_views", "views_gained_today",
-        "videos_checked_today", "new_videos_7d", "new_videos_today", "active_trackings",
+        "total_videos", "youtube_videos", "instagram_videos", "facebook_videos", "total_current_views", "views_gained_today",
+        "videos_checked_today", "new_videos_7d", "new_videos_today", "active_trackings", "videos_down",
     )
     return {**{k: int(v or 0) for k, v in zip(keys, row)}, "active_creators": int(active_creators)}
 
@@ -233,7 +271,7 @@ def sentiment_breakdown() -> tuple[SentimentCounts, list[GroupSentiment]]:
         ).all()
     overall = _counts([(s, n) for _, s, n in by_platform])
     platforms = []
-    for platform in ("youtube", "instagram"):
+    for platform in ("youtube", "instagram", "facebook"):
         pairs = [(s, n) for p, s, n in by_platform if p == platform]
         if pairs:
             platforms.append(GroupSentiment(name=platform, platform=platform, counts=_counts(pairs), total=sum(n for _, n in pairs)))
@@ -360,6 +398,7 @@ def trend(days: int) -> Trend:
                 videos=len(existing),
                 youtube_videos=existing.count("youtube"),
                 instagram_videos=existing.count("instagram"),
+                facebook_videos=existing.count("facebook"),
                 new_videos=discovered.get(day, 0),
                 videos_checked=len(checks),
             )

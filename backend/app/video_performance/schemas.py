@@ -253,6 +253,7 @@ class TrendPoint(BaseModel):
     videos: int
     youtube_videos: int
     instagram_videos: int
+    facebook_videos: int = 0
     new_videos: int  # newly detected on tracked creators
     videos_checked: int
 
@@ -261,6 +262,7 @@ class DashboardOut(BaseModel):
     total_videos: int
     youtube_videos: int
     instagram_videos: int
+    facebook_videos: int = 0
     total_current_views: int
     views_gained_today: int
     videos_checked_today: int
@@ -268,6 +270,7 @@ class DashboardOut(BaseModel):
     new_videos_today: int
     active_trackings: int
     active_creators: int
+    videos_down: int = 0  # deleted, private or otherwise unavailable on the platform
     sentiment_overall: SentimentCounts
     sentiment_by_platform: list[GroupSentiment]
     recent_sentiment: list[RecentSentiment]

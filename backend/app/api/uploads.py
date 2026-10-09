@@ -207,7 +207,7 @@ async def export_upload_rows(
     table = [[r.row_number, r.channel_name, r.channel_link, _ROW_LABELS.get(r.outcome, r.outcome), r.message] for r in rows]
     columns = ["Row", "Channel Name", "Channel Link", "Result", "Notes"]
     kind = "csv" if format == "csv" else "excel"
-    content = await run_in_threadpool(table_bytes, columns, table, kind, "Uploaded rows")
+    content = await run_in_threadpool(table_bytes, columns, table, kind, "Uploaded rows", {"Source file": upload.filename})
     stem = Path(upload.filename).stem[:80] or "upload"
     ext, media = ("csv", "text/csv; charset=utf-8") if kind == "csv" else (
         "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
