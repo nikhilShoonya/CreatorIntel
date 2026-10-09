@@ -2,21 +2,20 @@
 
 import { Suspense, useRef, useState, type ComponentProps } from "react";
 import { useSearchParams } from "next/navigation";
-import { FilePlus, FileSpreadsheet, ListVideo, Upload, UserPlus, Users } from "lucide-react";
+import { FilePlus, FileSpreadsheet, ListVideo, Upload } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/controls";
-import { CreatorsPanel } from "@/components/video-performance/CreatorsPanel";
 import { UploadsPanel } from "@/components/video-performance/UploadsPanel";
-import { AddCreatorDialog, AddVideoDialog, UploadVideosDialog } from "@/components/video-performance/dialogs";
+import { AddVideoDialog, UploadVideosDialog } from "@/components/video-performance/dialogs";
 import { sortFromParam, statusFromParam, VideoTable } from "@/components/video-performance/VideoTable";
 
-type Tab = "videos" | "creators" | "uploads";
+type Tab = "videos" | "uploads";
 type Toast = { tone: "success" | "error"; message: string } | null;
 
 export default function TrackingLibraryPage() {
   const [tab, setTab] = useState<Tab>("videos");
   const [refreshToken, setRefreshToken] = useState(0);
-  const [dialog, setDialog] = useState<"upload" | "video" | "creator" | null>(null);
+  const [dialog, setDialog] = useState<"upload" | "video" | null>(null);
   const [toast, setToast] = useState<Toast>(null);
   const toastTimer = useRef<number | undefined>(undefined);
 
@@ -44,9 +43,6 @@ export default function TrackingLibraryPage() {
           <Button onClick={() => setDialog("upload")}>
             <Upload size={16} /> Upload Excel
           </Button>
-          <Button onClick={() => setDialog("creator")}>
-            <UserPlus size={16} /> Track creator
-          </Button>
           <Button variant="primary" onClick={() => setDialog("video")}>
             <FilePlus size={16} /> Add video
           </Button>
@@ -58,7 +54,6 @@ export default function TrackingLibraryPage() {
           {(
             [
               { id: "videos", label: "Tracked videos", Icon: ListVideo },
-              { id: "creators", label: "Tracked creators", Icon: Users },
               { id: "uploads", label: "Uploads", Icon: FileSpreadsheet },
             ] as const
           ).map(({ id, label, Icon }) => (
@@ -83,21 +78,12 @@ export default function TrackingLibraryPage() {
               <VideoTableFromUrl refreshToken={refreshToken} onToast={showToast} onChanged={bump} />
             </Suspense>
           )}
-          {tab === "creators" && <CreatorsPanel refreshToken={refreshToken} onToast={showToast} onChanged={bump} />}
           {tab === "uploads" && <UploadsPanel refreshToken={refreshToken} onToast={showToast} onChanged={bump} />}
         </div>
       </Card>
 
       <UploadVideosDialog open={dialog === "upload"} onClose={() => setDialog(null)} onDone={bump} />
       <AddVideoDialog open={dialog === "video"} onClose={() => setDialog(null)} onSaved={saved} />
-      <AddCreatorDialog
-        open={dialog === "creator"}
-        onClose={() => setDialog(null)}
-        onSaved={(message) => {
-          saved(message);
-          setTab("creators");
-        }}
-      />
 
       {toast && (
         <div

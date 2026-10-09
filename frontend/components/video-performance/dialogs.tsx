@@ -9,7 +9,7 @@ import { PlatformIcon } from "@/components/ui/PlatformIcon";
 import { useApi } from "@/hooks/useApi";
 import { formatCompact, formatDateTime, formatNumber, formatPercent, safeHref } from "@/lib/format";
 import { vpApi } from "@/lib/vpApi";
-import type { VpCreator, VpUploadResult, VpVideo } from "@/types/videoPerformance";
+import type { VpUploadResult, VpVideo } from "@/types/videoPerformance";
 import { formatSigned } from "./format";
 
 const input =
@@ -174,105 +174,6 @@ function EditVideoForm({ video, onClose, onSaved }: { video: VpVideo; onClose: (
       </Field>
       <ErrorText error={error} />
       <FormFooter busy={busy} submitLabel="Save changes" onCancel={onClose} />
-    </form>
-  );
-}
-
-// ----------------------------------------------------------- add creator
-export function AddCreatorDialog({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: (m: string) => void }) {
-  return (
-    <Dialog
-      open={open}
-      title="Track a creator"
-      description="Newly published videos/reels are detected automatically every day and start tracking."
-      onClose={onClose}
-    >
-      {open && <AddCreatorForm onClose={onClose} onSaved={onSaved} />}
-    </Dialog>
-  );
-}
-
-function AddCreatorForm({ onClose, onSaved }: { onClose: () => void; onSaved: (m: string) => void }) {
-  const [url, setUrl] = useState("");
-  const [name, setName] = useState("");
-  const [backfill, setBackfill] = useState(0);
-  const { busy, error, run } = useSubmit();
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    run(async () => {
-      await vpApi.addCreator({ channel_url: url.trim(), creator_name: name.trim() || undefined, backfill });
-      onSaved("Creator added - checking the channel");
-      onClose();
-    });
-  }
-
-  return (
-    <form onSubmit={submit} className="space-y-4">
-      <Field label="Channel / profile link">
-        <input className={input} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://www.youtube.com/@handle or https://www.instagram.com/username/" required />
-      </Field>
-      <Field label="Creator name" hint="Optional">
-        <input className={input} value={name} onChange={(e) => setName(e.target.value)} maxLength={300} />
-      </Field>
-      <Field label="Also track existing videos now">
-        <select className={input} value={backfill} onChange={(e) => setBackfill(Number(e.target.value))}>
-          <option value={0}>No - only videos published from now on</option>
-          <option value={3}>Latest 3 videos</option>
-          <option value={5}>Latest 5 videos</option>
-          <option value={10}>Latest 10 videos</option>
-        </select>
-      </Field>
-      <p className="flex gap-1.5 text-xs text-muted">
-        <Info size={13} className="mt-px shrink-0" />
-        Instagram discovery works for Professional (Business/Creator) accounts through the official API.
-      </p>
-      <ErrorText error={error} />
-      <FormFooter busy={busy} submitLabel="Track creator" onCancel={onClose} />
-    </form>
-  );
-}
-
-// ---------------------------------------------------------- edit creator
-export function EditCreatorDialog({ creator, onClose, onSaved }: { creator: VpCreator | null; onClose: () => void; onSaved: (m: string) => void }) {
-  return (
-    <Dialog open={creator !== null} title="Edit creator tracking" onClose={onClose} size="sm">
-      {creator && <EditCreatorForm key={creator.id} creator={creator} onClose={onClose} onSaved={onSaved} />}
-    </Dialog>
-  );
-}
-
-function EditCreatorForm({ creator, onClose, onSaved }: { creator: VpCreator; onClose: () => void; onSaved: (m: string) => void }) {
-  const [name, setName] = useState(creator.creator_name);
-  const [enabled, setEnabled] = useState(creator.enabled);
-  const { busy, error, run } = useSubmit();
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    run(async () => {
-      await vpApi.updateCreator(creator.id, {
-        creator_name: name.trim() !== creator.creator_name ? name.trim() : undefined,
-        enabled: enabled !== creator.enabled ? enabled : undefined,
-      });
-      onSaved("Creator updated");
-      onClose();
-    });
-  }
-
-  return (
-    <form onSubmit={submit} className="space-y-4">
-      <Field label="Creator name">
-        <input className={input} value={name} onChange={(e) => setName(e.target.value)} maxLength={300} required />
-      </Field>
-      <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line p-3 text-sm">
-        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--color-accent)]" />
-        <span>
-          <span className="font-medium text-ink">Detect new videos daily</span>
-          <span className="block text-muted">When re-enabled, only videos published from then on are added.</span>
-        </span>
-      </label>
-      <ErrorText error={error} />
-      <FormFooter busy={busy} submitLabel="Save" onCancel={onClose} />
     </form>
   );
 }
