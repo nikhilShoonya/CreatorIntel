@@ -1,5 +1,6 @@
-"""Housekeeping: uploaded files are deleted after the retention period while their rows stay in the
-database (and on the website); Video Performance export; Meta token health."""
+"""Housekeeping: uploaded files are kept forever by default; when a retention period is configured they are
+deleted after it while their rows stay in the database (and on the website); Video Performance export;
+Meta token health."""
 
 import asyncio
 import io
@@ -28,6 +29,13 @@ def client():
         yield test_client
 
 
+@pytest.fixture
+def retention_30(monkeypatch):
+    """Opt in to deleting stored files after 30 days (the default keeps them forever)."""
+    monkeypatch.setattr(get_settings(), "upload_file_retention_days", 30)
+    return get_settings()
+
+
 def _age(model, upload_id: str, days: int) -> None:
     with session_scope() as db:
         upload = db.get(model, upload_id)
@@ -39,7 +47,7 @@ def _stored_path(model, upload_id: str):
         return get_settings().upload_dir / db.get(model, upload_id).stored_filename
 
 
-def test_creator_analytics_file_deleted_but_rows_kept(client):
+def test_creator_analytics_file_deleted_but_rows_kept(client, retention_30):
     csv = b"Channel Name,Channel Link\nBroken,not a link\nUnsupported,https://twitter.com/x\n"
     upload = client.post("/api/uploads", files={"file": ("keep.csv", csv, "text/csv")}).json()
     path = _stored_path(Upload, upload["id"])
@@ -62,7 +70,7 @@ def test_creator_analytics_file_deleted_but_rows_kept(client):
     assert list(frame["Channel Name"]) == ["Broken", "Unsupported"]
 
 
-def test_old_upload_without_saved_rows_is_backfilled_before_delete(client):
+def test_old_upload_without_saved_rows_is_backfilled_before_delete(client, retention_30):
     csv = b"Channel Name,Channel Link\nOld row,not a link\n"
     upload = client.post("/api/uploads", files={"file": ("old.csv", csv, "text/csv")}).json()
     with session_scope() as db:  # simulate an upload made before rows were stored
@@ -95,9 +103,21 @@ def test_video_performance_rows_cleanup_and_export(client):
     assert "Current Views" in frame.columns and "Views Gained" in frame.columns
 
 
-def test_retention_zero_keeps_files(client):
-    settings = get_settings().model_copy(update={"upload_file_retention_days": 0})
-    assert cleanup_old_upload_files(settings) == 0
+def test_files_are_kept_forever_by_default(client):
+    assert get_settings().upload_file_retention_days == 0
+    csv = b"Channel Name,Channel Link\nBroken,not a link\n"
+    upload = client.post("/api/uploads", files={"file": ("forever.csv", csv, "text/csv")}).json()
+    vt = client.post("/api/video-performance/uploads", files={"file": ("forever_v.csv", b"Video Link\nnot a link\n", "text/csv")}).json()
+    _age(Upload, upload["id"], 400)
+    _age(VtUpload, vt["upload"]["id"], 400)
+
+    cleanup_old_upload_files(get_settings())
+    vt_repo.cleanup_upload_files(get_settings().upload_dir, get_settings().upload_file_retention_days)
+    assert _stored_path(Upload, upload["id"]).exists() and _stored_path(VtUpload, vt["upload"]["id"]).exists()
+    listed = next(u for u in client.get("/api/uploads").json() if u["id"] == upload["id"])
+    assert listed["file_delete_after"] is None and listed["file_deleted_at"] is None  # no "kept until" date
+    vt_listed = next(u for u in client.get("/api/video-performance/uploads").json() if u["id"] == vt["upload"]["id"])
+    assert vt_listed["file_delete_after"] is None and vt_listed["file_available"] is True
 
 
 @pytest.mark.parametrize(

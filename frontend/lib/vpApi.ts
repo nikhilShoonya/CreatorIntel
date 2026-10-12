@@ -53,6 +53,17 @@ export const vpApi = {
 
   uploads: () => request<VpUpload[]>(`${BASE}/uploads`),
   uploadRows: (id: string) => request<{ upload: VpUpload; rows: VpUploadRow[] }>(`${BASE}/uploads/${encodeURIComponent(id)}/rows`),
+  renameUpload: (id: string, filename: string) =>
+    request<VpUpload>(`${BASE}/uploads/${encodeURIComponent(id)}`, jsonInit("PATCH", { filename })),
+  deleteUpload: (id: string, deleteVideos: boolean) =>
+    request<ActionResult>(`${BASE}/uploads/${encodeURIComponent(id)}?delete_videos=${deleteVideos ? "true" : "false"}`, jsonInit("DELETE")),
+  refreshUpload: (id: string) => request<ActionResult>(`${BASE}/uploads/${encodeURIComponent(id)}/refresh`, jsonInit("POST")),
+  downloadUploadFile: (upload: VpUpload) => downloadFile(`${BASE}/uploads/${encodeURIComponent(upload.id)}/file`, upload.filename),
+  downloadUploadRows: (upload: VpUpload, kind: "excel" | "csv") =>
+    downloadFile(
+      `${BASE}/uploads/${encodeURIComponent(upload.id)}/rows/export${toQuery({ format: kind })}`,
+      `${upload.filename.replace(/\.[^.]+$/, "")}_rows.${kind === "excel" ? "xlsx" : "csv"}`,
+    ),
   exportVideos: (kind: "excel" | "csv", filters: VpFilters) =>
     downloadFile(`${BASE}/exports/${kind}${toQuery({ ...filters })}`, `video_performance.${kind === "excel" ? "xlsx" : "csv"}`),
 

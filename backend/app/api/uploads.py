@@ -120,7 +120,8 @@ async def upload_file(
 
 
 @router.get("", response_model=list[UploadOut])
-def list_uploads(limit: int = Query(default=50, ge=1, le=200), db: Session = Depends(get_read_db)):
+def list_uploads(limit: int = Query(default=1000, ge=1, le=5000), db: Session = Depends(get_read_db)):
+    # A high default: past uploads stay visible on the History page (they are never removed automatically).
     # Uploads + per-status creator counts in ONE query.
     counts = (
         select(UploadItem.upload_id, Creator.status, func.count().label("n"))

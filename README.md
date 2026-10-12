@@ -58,7 +58,7 @@ All secrets live in `backend/.env`, which is git-ignored and never sent to the b
 | `AVERAGE_VIEWS_SAMPLE_SIZE` | optional | Latest videos/reels used for average views and engagement (default 10) |
 | `RECENT_CONTENT_FETCH_LIMIT` | optional | Latest videos/reels fetched per creator (default 20) |
 | `CACHE_TTL_HOURS` | optional | A creator re-uploaded within this window reuses its data (default 24) |
-| `UPLOAD_FILE_RETENTION_DAYS` | optional | Uploaded files are deleted after N days; their rows stay (default 30, 0 = keep) |
+| `UPLOAD_FILE_RETENTION_DAYS` | optional | Default 0 = uploaded files are kept forever. N > 0 deletes the stored file after N days (its rows always stay) |
 | `VIDEO_TRACKING_TIMEZONE` | optional | Timezone for the daily jobs and "today" (default `Asia/Kolkata`) |
 | `VIDEO_TRACKING_REFRESH_TIME` | optional | Daily view refresh time, `HH:MM` (default `06:30`) |
 | `VIDEO_TRACKING_MAX_DAYS` | optional | Stop tracking a video after N days (default 0 = forever) |
@@ -218,6 +218,13 @@ Metrics and AI fields cannot be edited by hand. Use **Refresh Data** or **Re-ana
 - **Example:** `backend/samples/sample_videos.xlsx`.
 - **Single videos:** use **Add video** instead.
 
+**Tracking Library → Uploads** lists every uploaded video list. Each one can be:
+- **viewed**: its tracked videos, plus the invalid rows and why they were skipped;
+- **renamed**;
+- **re-checked**: views of all its videos are fetched now;
+- **downloaded**: the original file, or its rows as Excel;
+- **deleted**: its videos keep being tracked, unless you tick "also delete the videos this file added". Videos tracked before the file are never touched.
+
 **Supported links:**
 - YouTube videos and Shorts;
 - Instagram reels/posts;
@@ -288,7 +295,7 @@ Sentiment details:
 
 ## 12. Files, logs and speed
 
-- **Uploaded files** are deleted after `UPLOAD_FILE_RETENTION_DAYS`. Their rows stay in the database and remain visible and downloadable, under **History → View file data** and **Tracking Library → Uploads**.
+- **Uploaded files and their data are kept forever.** Nothing is deleted automatically: every upload, its rows, tracked videos and their daily history stay in the database and on the website until you delete them yourself. (Setting `UPLOAD_FILE_RETENTION_DAYS` to N > 0 would remove only the stored original file after N days; its rows would still stay.)
 - **Logs** go to `backend/logs/creatorintel.log`, rotated daily and kept for `LOG_RETENTION_DAYS`. Keys, tokens and database passwords are redacted.
 - **Remote database speed:**
   - Each round trip to Neon adds latency, about 300 ms from India to us-east-2.

@@ -19,7 +19,6 @@ interface Props<Row> {
   filename?: string;
   uploadedAt?: string;
   fileDeletedAt?: string | null;
-  fileDeleteAfter?: string | null;
   rows?: Row[];
   error?: string;
   columns: FileRowsColumn<Row>[];
@@ -34,7 +33,6 @@ export function FileRowsDialog<Row>({
   filename,
   uploadedAt,
   fileDeletedAt,
-  fileDeleteAfter,
   rows,
   error,
   columns,
@@ -70,7 +68,6 @@ export function FileRowsDialog<Row>({
               <>
                 <FileCheck2 size={16} className="text-emerald-600" />
                 Uploaded {formatDateTime(uploadedAt)}
-                {fileDeleteAfter && <span className="text-muted">· original file kept until {formatDateTime(fileDeleteAfter)}</span>}
               </>
             )}
           </p>
@@ -142,19 +139,12 @@ export function OutcomePill({ label, tone }: { label: string; tone: keyof typeof
   );
 }
 
-/** "Kept until 30 Oct" / "Removed 1 Oct" for upload tables. */
-export function FileStatusText({ deletedAt, deleteAfter }: { deletedAt: string | null; deleteAfter: string | null }) {
-  if (deletedAt)
-    return (
-      <span className="whitespace-nowrap text-xs text-muted" title="Rows are saved in the database">
-        Removed {new Date(deletedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} · data saved
-      </span>
-    );
-  if (deleteAfter)
-    return (
-      <span className="whitespace-nowrap text-xs text-muted">
-        Kept until {new Date(deleteAfter).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
-      </span>
-    );
-  return <span className="text-xs text-muted">Kept</span>;
+/** Shown only for an original file removed earlier (rows are always kept); nothing otherwise. */
+export function FileStatusText({ deletedAt }: { deletedAt: string | null }) {
+  if (!deletedAt) return null;
+  return (
+    <span className="whitespace-nowrap text-xs text-muted" title="All rows are saved in the database">
+      Original file removed {new Date(deletedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} · data saved
+    </span>
+  );
 }

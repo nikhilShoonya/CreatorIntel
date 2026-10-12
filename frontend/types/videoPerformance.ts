@@ -94,6 +94,8 @@ export interface VpUpload {
   created_at: string;
   file_deleted_at: string | null;
   file_delete_after: string | null;
+  /** The original uploaded file can still be downloaded. */
+  file_available: boolean;
 }
 
 export interface VpUploadResult {

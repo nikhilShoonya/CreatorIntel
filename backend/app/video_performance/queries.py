@@ -4,6 +4,7 @@ import math
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Literal
 
 from sqlalchemy import case, func, or_, select, union_all
@@ -175,15 +176,27 @@ def creators() -> list[CreatorOut]:
 
 def _upload_out(upload: VtUpload) -> UploadOut:
     out = UploadOut.model_validate(upload)
-    retention = get_settings().upload_file_retention_days
+    settings = get_settings()
+    retention = settings.upload_file_retention_days
     if upload.file_deleted_at is None and upload.stored_filename and retention > 0:
         out.file_delete_after = as_utc(upload.created_at) + timedelta(days=retention)
+    out.file_available = bool(
+        upload.file_deleted_at is None and upload.stored_filename
+        and (settings.upload_dir / Path(upload.stored_filename).name).is_file()
+    )
     return out
 
 
-def uploads(limit: int = 50) -> list[UploadOut]:
+def uploads(limit: int | None = None) -> list[UploadOut]:
+    """Uploads, newest first (all of them by default - uploads are never hidden from the website)."""
     with read_scope() as db:
         return [_upload_out(u) for u in db.scalars(select(VtUpload).order_by(VtUpload.created_at.desc()).limit(limit))]
+
+
+def upload(upload_id: str) -> UploadOut | None:
+    with read_scope() as db:
+        found = db.get(VtUpload, upload_id)
+        return _upload_out(found) if found else None
 
 
 def upload_video_ids(upload_id: str) -> list[int] | None:

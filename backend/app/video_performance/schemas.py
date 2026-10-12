@@ -126,6 +126,12 @@ class UploadOut(BaseModel):
     # Original file retention: rows stay in the database after the file is removed.
     file_deleted_at: UTC | None = None
     file_delete_after: UTC | None = None
+    file_available: bool = False  # the original file can still be downloaded
+
+
+class UploadUpdateIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    filename: str = Field(min_length=1, max_length=200)
 
 
 class UploadRowOut(BaseModel):

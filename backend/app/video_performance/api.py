@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from app.config.settings import get_settings
 from app.utils.logging import log_event
@@ -34,6 +34,7 @@ from app.video_performance.schemas import (
     UploadOut,
     UploadResultOut,
     UploadRowsOut,
+    UploadUpdateIn,
     VideoCreateIn,
     VideoDetailOut,
     VideoListOut,
@@ -113,7 +114,7 @@ async def upload_videos(
 
     upload_id, new_ids = await run_in_threadpool(persist)
     tracker.start_processing(new_ids)
-    upload = next(u for u in await run_in_threadpool(queries.uploads, 5) if u.id == upload_id)
+    upload = await run_in_threadpool(queries.upload, upload_id)
     log_event(logger, logging.INFO, "vt_upload", upload_id=upload_id, rows=len(result.rows), added=len(new_ids))
     return UploadResultOut(
         upload=upload,
@@ -134,6 +135,56 @@ def list_uploads():
 
 _PLATFORM_LABELS = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook"}
 _ROW_LABELS = {"added": "Added", "already_tracked": "Already tracked", "duplicate": "Duplicate", "invalid": "Invalid"}
+
+
+@router.patch("/uploads/{upload_id}", response_model=UploadOut)
+def rename_upload(upload_id: str, body: UploadUpdateIn):
+    """Rename an uploaded file (the name shown on the website and used for its downloads)."""
+    name = Path(clean_text(body.filename)).name.strip()[:200]
+    if not name:
+        raise HTTPException(status_code=422, detail="File name is required")
+    if not repo.rename_upload(upload_id, name):
+        raise HTTPException(status_code=404, detail="Upload not found")
+    return queries.upload(upload_id)
+
+
+@router.delete("/uploads/{upload_id}", response_model=ActionOut)
+def delete_upload(upload_id: str, delete_videos: bool = Query(default=False)):
+    """Delete an upload and its saved rows. Its videos keep being tracked unless delete_videos=true."""
+    result = repo.delete_upload(upload_id, delete_videos)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    stored, removed = result
+    if stored:  # only after the delete is committed
+        try:
+            (get_settings().upload_dir / Path(stored).name).unlink(missing_ok=True)
+        except OSError:
+            log_event(logger, logging.WARNING, "vt_upload_file_not_removed", upload_id=upload_id)
+    log_event(logger, logging.INFO, "vt_upload_deleted", upload_id=upload_id, videos_removed=removed)
+    suffix = f" and {removed} video{'s' if removed != 1 else ''}" if delete_videos else " - its videos are still tracked"
+    return ActionOut(affected=1, message=f"Upload deleted{suffix}")
+
+
+@router.post("/uploads/{upload_id}/refresh", response_model=ActionOut, status_code=202)
+async def refresh_upload(upload_id: str, tracker: VideoTracker = Depends(get_tracker)):
+    """Check the views of every video in this file now."""
+    ids = await run_in_threadpool(_upload_scope, upload_id)
+    queued = await run_in_threadpool(repo.queue_for_processing, ids) if ids else []
+    tracker.start_processing(queued)
+    return ActionOut(affected=len(queued), message=f"Refreshing {len(queued)} video{'s' if len(queued) != 1 else ''}")
+
+
+@router.get("/uploads/{upload_id}/file")
+def download_upload_file(upload_id: str):
+    """The original uploaded file, exactly as it was uploaded."""
+    found = repo.upload_file(upload_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    filename, stored, removed = found
+    path = get_settings().upload_dir / Path(stored).name if stored else None
+    if removed or path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="The original file is no longer stored - download the rows instead")
+    return FileResponse(path, filename=filename)
 
 
 @router.get("/uploads/{upload_id}/rows", response_model=UploadRowsOut)

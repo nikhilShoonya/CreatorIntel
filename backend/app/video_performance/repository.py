@@ -753,6 +753,55 @@ def import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, lis
     raise AssertionError("unreachable")
 
 
+# ---------------------------------------------------------------- uploads (edit / delete)
+def upload_file(upload_id: str) -> tuple[str, str | None, bool] | None:
+    """(display filename, stored filename, file already removed) of an upload, or None if it does not exist."""
+    from app.video_performance.models import VtUpload
+
+    with read_scope() as db:
+        upload = db.get(VtUpload, upload_id)
+        if upload is None:
+            return None
+        return upload.filename, upload.stored_filename, upload.file_deleted_at is not None
+
+
+def rename_upload(upload_id: str, filename: str) -> bool:
+    from app.video_performance.models import VtUpload
+
+    with session_scope() as db:
+        upload = db.get(VtUpload, upload_id)
+        if upload is None:
+            return False
+        upload.filename = filename
+        return True
+
+
+def delete_upload(upload_id: str, delete_videos: bool) -> tuple[str | None, int] | None:
+    """Delete an upload record and its saved rows. Returns (stored filename, videos deleted), None if unknown.
+
+    Videos this file added keep being tracked unless delete_videos is set; then they are deleted together
+    with their history. Videos that were already tracked before this file are never touched.
+    """
+    from app.video_performance.models import VtUpload, VtUploadRow
+
+    with session_scope() as db:
+        upload = db.get(VtUpload, upload_id)
+        if upload is None:
+            return None
+        stored = upload.stored_filename
+        added = list(db.scalars(select(VtVideo.id).where(VtVideo.upload_id == upload_id)))
+        removed = 0
+        if added and delete_videos:
+            db.execute(delete(VtViewSnapshot).where(VtViewSnapshot.video_id.in_(added)))
+            db.execute(delete(VtSentiment).where(VtSentiment.video_id.in_(added)))
+            removed = db.execute(delete(VtVideo).where(VtVideo.id.in_(added))).rowcount or 0
+        elif added:
+            db.execute(update(VtVideo).where(VtVideo.id.in_(added)).values(upload_id=None))
+        db.execute(delete(VtUploadRow).where(VtUploadRow.upload_id == upload_id))
+        db.execute(delete(VtUpload).where(VtUpload.id == upload_id))
+    return stored, removed
+
+
 # ---------------------------------------------------------------- housekeeping
 def cleanup_upload_files(upload_dir, retention_days: int) -> int:
     """Delete uploaded video lists older than the retention period; their rows stay in

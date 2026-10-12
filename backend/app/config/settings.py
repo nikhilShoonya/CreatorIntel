@@ -71,8 +71,8 @@ class Settings(BaseSettings):
     cache_ttl_hours: int = Field(default=24, ge=0)
     max_upload_size_mb: int = Field(default=10, ge=1, le=50)
     max_rows_per_upload: int = Field(default=1000, ge=1)
-    # Uploaded files are deleted after this many days; their rows stay in the database (0 = keep files forever)
-    upload_file_retention_days: int = Field(default=30, ge=0)
+    # 0 (default) = uploaded files are kept forever. N > 0 = delete the stored file after N days (its rows stay).
+    upload_file_retention_days: int = Field(default=0, ge=0)
     housekeeping_interval_hours: int = Field(default=6, ge=1, le=168)
 
     # --- HTTP behaviour -------------------------------------------------

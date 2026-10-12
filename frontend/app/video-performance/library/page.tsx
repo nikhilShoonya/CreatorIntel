@@ -78,7 +78,9 @@ export default function TrackingLibraryPage() {
               <VideoTableFromUrl refreshToken={refreshToken} onToast={showToast} onChanged={bump} />
             </Suspense>
           )}
-          {tab === "uploads" && <UploadsPanel refreshToken={refreshToken} onToast={showToast} onChanged={bump} />}
+          {tab === "uploads" && (
+            <UploadsPanel refreshToken={refreshToken} onToast={showToast} onChanged={bump} onUpload={() => setDialog("upload")} />
+          )}
         </div>
       </Card>
 

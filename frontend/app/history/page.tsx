@@ -6,7 +6,7 @@ import { ArrowRight, FileText, History, Loader2, Trash2 } from "lucide-react";
 
 import { Card, EmptyState, ErrorBanner } from "@/components/ui/controls";
 import { ConfirmDialog } from "@/components/ui/Dialog";
-import { FileRowsDialog, FileStatusText, OutcomePill } from "@/components/ui/FileRowsDialog";
+import { FileRowsDialog, OutcomePill } from "@/components/ui/FileRowsDialog";
 import { useApi } from "@/hooks/useApi";
 import { useUploads } from "@/hooks/useData";
 import { api } from "@/lib/api";
@@ -30,7 +30,6 @@ function UploadFileData({ upload, onClose }: { upload: UploadSummary | null; onC
       filename={upload?.filename}
       uploadedAt={upload?.created_at}
       fileDeletedAt={data?.upload.file_deleted_at ?? upload?.file_deleted_at}
-      fileDeleteAfter={data?.upload.file_delete_after ?? upload?.file_delete_after}
       rows={data?.rows}
       error={error}
       rowKey={(row) => row.row_number}
@@ -103,7 +102,7 @@ export default function HistoryPage() {
             <table className="w-full min-w-[900px] text-sm">
               <thead className="bg-slate-50 text-left text-xs font-semibold text-slate-600">
                 <tr>
-                  {["File", "Uploaded", "Total", "Successful", "Partial", "Failed", "Duplicates", "Status", "Original file", ""].map((label) => (
+                  {["File", "Uploaded", "Total", "Successful", "Partial", "Failed", "Duplicates", "Status", ""].map((label) => (
                     <th key={label} className="whitespace-nowrap border-b border-line px-4 py-3">
                       {label}
                     </th>
@@ -114,7 +113,7 @@ export default function HistoryPage() {
                 {!data
                   ? Array.from({ length: 3 }, (_, i) => (
                       <tr key={i}>
-                        <td colSpan={10} className="border-b border-line px-4 py-4">
+                        <td colSpan={9} className="border-b border-line px-4 py-4">
                           <div className="h-4 animate-pulse rounded bg-slate-100" />
                         </td>
                       </tr>
@@ -132,9 +131,6 @@ export default function HistoryPage() {
                         <td className="border-b border-line px-4 py-3 tabular-nums text-slate-500">{upload.duplicate_rows}</td>
                         <td className="border-b border-line px-4 py-3">
                           <UploadStatusPill upload={upload} />
-                        </td>
-                        <td className="border-b border-line px-4 py-3">
-                          <FileStatusText deletedAt={upload.file_deleted_at} deleteAfter={upload.file_delete_after} />
                         </td>
                         <td className="border-b border-line px-4 py-3">
                           <div className="flex items-center justify-end gap-3">
