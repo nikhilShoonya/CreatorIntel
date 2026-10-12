@@ -21,7 +21,7 @@ from app.video_performance.models import (
     VtVideo,
     VtViewSnapshot,
 )
-from app.video_performance.repository import read_scope
+from app.video_performance.repository import STALE_COUNT_WINDOW, is_outdated_count, read_scope
 from app.video_performance.schemas import (
     CreatorOut,
     GroupSentiment,
@@ -147,15 +147,20 @@ def history(video_id: int) -> list[SnapshotOut]:
             select(VtViewSnapshot).where(VtViewSnapshot.video_id == video_id).order_by(VtViewSnapshot.captured_at)
         ).all()
     out, previous = [], None
+    kept: list[tuple[datetime, int | None]] = []
     for snap in snaps:
-        change = snap.views - previous if snap.views is not None and previous is not None else None
+        # An older, lower count returned by the API shortly after a higher one (saved before this was filtered).
+        outdated = is_outdated_count(snap.views, kept, as_utc(snap.captured_at))
+        change = snap.views - previous if not outdated and snap.views is not None and previous is not None else None
         out.append(
             SnapshotOut(
                 captured_at=snap.captured_at, views=snap.views, likes=snap.likes, comments=snap.comments,
-                engagement_rate=snap.engagement_rate, views_change=change,
+                engagement_rate=snap.engagement_rate, views_change=change, outdated=outdated,
             )
         )
-        previous = snap.views if snap.views is not None else previous
+        if not outdated:
+            kept.append((as_utc(snap.captured_at), snap.views))
+            previous = snap.views if snap.views is not None else previous
     return list(reversed(out))  # newest first
 
 
@@ -354,6 +359,22 @@ def _trend_snapshots(start: datetime) -> list:
         return db.execute(select(combined).order_by(combined.c.captured_at)).all()
 
 
+def _without_outdated_counts(snapshots: list) -> list:
+    """Drop readings lower than one taken shortly before (outdated API counts), oldest-first input."""
+    recent: dict[int, list[tuple[datetime, int | None]]] = {}
+    kept = []
+    for row in snapshots:
+        at = as_utc(row[1])
+        seen = [(t, n) for t, n in recent.get(row[0], []) if at - STALE_COUNT_WINDOW <= t]
+        if is_outdated_count(row[2], seen, at):
+            recent[row[0]] = seen
+            continue
+        seen.append((at, row[2]))
+        recent[row[0]] = seen
+        kept.append(row)
+    return kept
+
+
 def _video_dates() -> list:
     with read_scope() as db:
         return db.execute(select(VtVideo.platform, VtVideo.created_at, VtVideo.source, VtVideo.discovered_at)).all()
@@ -375,7 +396,7 @@ def trend(days: int) -> Trend:
 
     state: dict[int, tuple] = {}  # each video's latest (views, likes, comments) so far
     per_day: dict[date, dict[int, tuple]] = {}  # latest check of each video on each day of the range
-    for video_id, captured_at, views, likes, comments in snapshots:
+    for video_id, captured_at, views, likes, comments in _without_outdated_counts(snapshots):
         if as_utc(captured_at) < start:
             state[video_id] = (views, likes, comments)
         else:

@@ -1,5 +1,6 @@
 """Database access for Video Performance (sync functions; async callers run them in threads)."""
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -9,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.db import ReadSessionLocal, session_scope
+from app.utils.logging import log_event
 from app.utils.time import as_utc, utcnow
 from app.utils.url_parser import ParsedLink
 from app.video_performance.models import (
@@ -24,6 +26,9 @@ from app.video_performance.platforms import ChannelInfo, DiscoveredVideo, Platfo
 from app.video_performance.sentiment import SentimentResult
 from app.video_performance.timeutil import local_day_start_utc
 from app.video_performance.urls import ParsedVideo
+
+
+logger = logging.getLogger("creatorintel.video_performance.repository")
 
 
 class Conflict(Exception):
@@ -87,6 +92,75 @@ def _link_creator(db: Session, video: VtVideo) -> None:
             video.creator_name = video.creator_name or creator.creator_name
 
 
+# Platform APIs are served from caches: a check made shortly after another one sometimes returns an older,
+# slightly lower view count (seen as e.g. -83 views a few minutes later, back up on the next check). A reading
+# lower than one taken within this window is treated as such an outdated count and not stored; a real decrease
+# (e.g. YouTube removing spam views) still shows once it persists beyond the window.
+STALE_COUNT_WINDOW = timedelta(hours=12)
+
+
+def is_outdated_count(views: int | None, earlier: list[tuple[datetime, int | None]], at: datetime) -> bool:
+    """True when `views` is lower than a reading taken within STALE_COUNT_WINDOW before `at`."""
+    if views is None:
+        return False
+    recent = [n for t, n in earlier if n is not None and at - STALE_COUNT_WINDOW <= as_utc(t) <= at]
+    return bool(recent) and views < max(recent)
+
+
+def repair_outdated_counts() -> int:
+    """Videos whose current numbers came from an outdated (lower) API count saved before such counts were
+    filtered get the higher real reading back. Saved readings are not changed. Safe to run any time."""
+    from collections import defaultdict
+
+    with session_scope() as db:
+        rows = db.execute(
+            select(VtViewSnapshot.video_id, VtViewSnapshot.captured_at, VtViewSnapshot.views, VtViewSnapshot.likes,
+                   VtViewSnapshot.comments, VtViewSnapshot.engagement_rate)
+            .where(VtViewSnapshot.views.is_not(None))
+            .order_by(VtViewSnapshot.video_id, VtViewSnapshot.captured_at)
+        ).all()
+        by_video: dict[int, list] = defaultdict(list)
+        for row in rows:
+            by_video[row.video_id].append(row)
+        repaired = 0
+        for video_id, snaps in by_video.items():
+            latest = snaps[-1]
+            at = as_utc(latest.captured_at)
+            earlier = [(as_utc(s.captured_at), s.views) for s in snaps[:-1]]
+            if not is_outdated_count(latest.views, earlier, at):
+                continue
+            video = db.get(VtVideo, video_id)
+            if video is None or video.current_views != latest.views:
+                continue  # already corrected (or changed since)
+            best = max((s for s in snaps if at - STALE_COUNT_WINDOW <= as_utc(s.captured_at)), key=lambda s: s.views)
+            _apply_counts(video, best.views, best.likes, best.comments, best.engagement_rate,
+                          _previous_day_views(db, video_id, at))
+            repaired += 1
+    if repaired:
+        log_event(logger, logging.INFO, "vt_outdated_counts_repaired", videos=repaired)
+    return repaired
+
+
+def _previous_day_views(db: Session, video_id: int, now: datetime) -> int | None:
+    """Views of the latest check before today (ignoring an outdated lower count taken shortly before it)."""
+    day_start = local_day_start_utc(now)
+    last = db.execute(
+        select(VtViewSnapshot.captured_at, VtViewSnapshot.views)
+        .where(VtViewSnapshot.video_id == video_id, VtViewSnapshot.captured_at < day_start, VtViewSnapshot.views.is_not(None))
+        .order_by(VtViewSnapshot.captured_at.desc())
+        .limit(1)
+    ).first()
+    if last is None:
+        return None
+    return db.scalar(
+        select(func.max(VtViewSnapshot.views)).where(
+            VtViewSnapshot.video_id == video_id,
+            VtViewSnapshot.captured_at >= as_utc(last.captured_at) - STALE_COUNT_WINDOW,
+            VtViewSnapshot.captured_at < day_start,
+        )
+    )
+
+
 def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
     """Store a new snapshot and the derived day-over-day numbers. Returns False if the video vanished."""
     now = utcnow()
@@ -94,17 +168,26 @@ def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
         video = db.get(VtVideo, video_id)
         if video is None:
             return False
+        previous = _previous_day_views(db, video_id, now)
+        recent = db.execute(
+            select(VtViewSnapshot.captured_at, VtViewSnapshot.views, VtViewSnapshot.likes, VtViewSnapshot.comments,
+                   VtViewSnapshot.engagement_rate)
+            .where(VtViewSnapshot.video_id == video_id, VtViewSnapshot.captured_at >= now - STALE_COUNT_WINDOW,
+                   VtViewSnapshot.views.is_not(None))
+            .order_by(VtViewSnapshot.views.desc(), VtViewSnapshot.captured_at.desc())
+        ).all()
+        if is_outdated_count(metrics.views, [(r.captured_at, r.views) for r in recent], now):
+            # Keep the higher reading from earlier (a real API value), not the outdated one.
+            best = recent[0]
+            _apply_counts(video, best.views, best.likes, best.comments, best.engagement_rate, previous)
+            video.last_checked_at = now
+            if video.status not in (VideoStatus.PAUSED, VideoStatus.TRACKING, VideoStatus.PARTIAL):
+                video.status, video.status_reason = VideoStatus.TRACKING, None
+            log_event(logger, logging.INFO, "vt_outdated_count_ignored", video_id=video_id,
+                      returned=metrics.views, kept=best.views)
+            return True
+
         rate = engagement(metrics.views, metrics.likes, metrics.comments)
-        previous = db.scalar(
-            select(VtViewSnapshot.views)
-            .where(
-                VtViewSnapshot.video_id == video_id,
-                VtViewSnapshot.captured_at < local_day_start_utc(now),
-                VtViewSnapshot.views.is_not(None),
-            )
-            .order_by(VtViewSnapshot.captured_at.desc())
-            .limit(1)
-        )
         db.add(
             VtViewSnapshot(
                 video_id=video_id, captured_at=now, views=metrics.views, likes=metrics.likes,
@@ -120,15 +203,7 @@ def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
             video.creator_name = metrics.channel_title or (f"@{metrics.owner_username}" if metrics.owner_username else None)
         _link_creator(db, video)
 
-        video.current_views = metrics.views
-        video.previous_views = previous
-        video.views_gained = metrics.views - previous if metrics.views is not None and previous is not None else None
-        video.growth_pct = (
-            round(video.views_gained / previous * 100, 2) if video.views_gained is not None and previous else None
-        )
-        video.likes, video.comments = metrics.likes, metrics.comments
-        video.engagement_rate = rate
-        video.engagement_basis = "views" if rate is not None else None
+        _apply_counts(video, metrics.views, metrics.likes, metrics.comments, rate, previous)
         video.last_checked_at = now
 
         notes = list(metrics.notes)
@@ -138,6 +213,17 @@ def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
             video.status = VideoStatus.PARTIAL if metrics.views is None else VideoStatus.TRACKING
         video.status_reason = "; ".join(notes) or None
         return True
+
+
+def _apply_counts(video: VtVideo, views: int | None, likes: int | None, comments: int | None,
+                  rate: float | None, previous: int | None) -> None:
+    video.current_views = views
+    video.previous_views = previous
+    video.views_gained = views - previous if views is not None and previous is not None else None
+    video.growth_pct = round(video.views_gained / previous * 100, 2) if video.views_gained is not None and previous else None
+    video.likes, video.comments = likes, comments
+    video.engagement_rate = rate
+    video.engagement_basis = "views" if rate is not None else None
 
 
 def save_error(video_id: int, error: PlatformError) -> None:

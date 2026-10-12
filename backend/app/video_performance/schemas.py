@@ -86,6 +86,8 @@ class SnapshotOut(BaseModel):
     comments: int | None
     engagement_rate: float | None
     views_change: int | None
+    # An older, lower count the API returned shortly after a higher one - not used for any calculation.
+    outdated: bool = False
 
 
 class HistoryOut(BaseModel):

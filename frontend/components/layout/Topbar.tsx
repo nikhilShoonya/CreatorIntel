@@ -8,7 +8,7 @@ import { Check, Loader2, RefreshCw, Search } from "lucide-react";
 import { Dialog } from "@/components/ui/Dialog";
 
 import { refreshAllData, useApi } from "@/hooks/useApi";
-import { useStoredValue } from "@/hooks/useStoredValue";
+import { LAST_UPLOAD_KEY, useStoredValue } from "@/hooks/useStoredValue";
 import { api } from "@/lib/api";
 import { initials } from "@/lib/format";
 import { vpApi } from "@/lib/vpApi";
@@ -59,6 +59,7 @@ function RefreshDataButton() {
   const [clickBusy, setClickBusy] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const pathname = usePathname();
+  const [lastUploadId] = useStoredValue(LAST_UPLOAD_KEY, "");
 
   const { data: jobs } = useApi("topbar-jobs", () => vpApi.jobs(), {
     refreshMs: (d) => (d?.some((j) => j.running) ? 4000 : false),
@@ -70,6 +71,8 @@ function RefreshDataButton() {
 
   const isVideoPage = pathname.includes("/video-performance");
   const isCreatorPage = pathname.startsWith("/creators");
+  // Upload & Analyze shows the latest upload's creators: refresh exactly those.
+  const isUploadPage = pathname === "/" && !!lastUploadId;
 
   const runningJob = jobs?.find((j) => j.running);
   const creatorRunning = !!creatorJob?.running;
@@ -107,9 +110,9 @@ function RefreshDataButton() {
       } catch (e) {
         console.error("Failed to start metrics_refresh job", e);
       }
-    } else if (isCreatorPage) {
+    } else if (isCreatorPage || isUploadPage) {
       try {
-        await api.refreshAllCreators();
+        await api.refreshAllCreators(isUploadPage ? lastUploadId : undefined);
       } catch (e) {
         console.error("Failed to start creator refresh", e);
       }

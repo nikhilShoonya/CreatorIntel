@@ -336,7 +336,18 @@ export function HistoryDialog({ videoId, onClose }: { videoId: number | null; on
                   </tr>
                 </thead>
                 <tbody>
-                  {data.snapshots.map((snap) => (
+                  {data.snapshots.map((snap) =>
+                    snap.outdated ? (
+                      <tr
+                        key={snap.captured_at}
+                        className="border-t border-line bg-slate-50/60 text-slate-400"
+                        title="The platform's API briefly returned an older, cached count right after a newer one. It is not used for any number."
+                      >
+                        <td className="px-4 py-2 whitespace-nowrap">{formatDateTime(snap.captured_at)}</td>
+                        <td className="px-4 py-2 text-right tabular-nums line-through">{formatNumber(snap.views)}</td>
+                        <td colSpan={4} className="px-4 py-2 text-right text-xs">Older cached count from the API - ignored</td>
+                      </tr>
+                    ) : (
                     <tr key={snap.captured_at} className="border-t border-line">
                       <td className="px-4 py-2 whitespace-nowrap">{formatDateTime(snap.captured_at)}</td>
                       <td className="px-4 py-2 text-right tabular-nums font-medium">{formatNumber(snap.views)}</td>
@@ -347,7 +358,8 @@ export function HistoryDialog({ videoId, onClose }: { videoId: number | null; on
                       <td className="px-4 py-2 text-right tabular-nums">{formatNumber(snap.comments)}</td>
                       <td className="px-4 py-2 text-right tabular-nums">{formatPercent(snap.engagement_rate)}</td>
                     </tr>
-                  ))}
+                    ),
+                  )}
                 </tbody>
               </table>
             </div>

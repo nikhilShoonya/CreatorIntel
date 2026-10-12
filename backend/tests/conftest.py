@@ -30,6 +30,8 @@ os.environ.update(
         "GROQ_REQUESTS_PER_MINUTE": "100000",
         "GROQ_TOKENS_PER_MINUTE": "100000000",
         "HTTP_MAX_RETRIES": "1",
+        # one YouTube statistics read per check in tests (repeated reads are tested in test_vp_outdated_counts.py)
+        "YOUTUBE_VIEW_READS": "1",
         "CACHE_TTL_HOURS": "24",
         "VIDEO_TRACKING_SCHEDULER_ENABLED": "false",
     }

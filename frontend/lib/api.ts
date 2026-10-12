@@ -112,7 +112,9 @@ export const api = {
   retry: (id: number) => request<{ message: string }>(`/api/creators/${id}/retry`, { method: "POST" }),
   reanalyze: (id: number) => request<{ message: string }>(`/api/creators/${id}/reanalyze`, { method: "POST" }),
   configStatus: () => request<ConfigStatus>("/api/config/status"),
-  refreshAllCreators: () => request<CreatorRefreshStatus>("/api/creators/refresh-all", { method: "POST" }),
+  /** Re-fetch every creator, or only one upload's creators (Upload & Analyze page). */
+  refreshAllCreators: (uploadId?: string) =>
+    request<CreatorRefreshStatus>(`/api/creators/refresh-all${toQuery({ upload_id: uploadId || undefined })}`, { method: "POST" }),
   creatorRefreshStatus: () => request<CreatorRefreshStatus>("/api/creators/refresh-status"),
 
   // CRUD

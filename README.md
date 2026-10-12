@@ -277,6 +277,11 @@ The latest `RECENT_CONTENT_FETCH_LIMIT` (20) videos/reels are fetched. Live and 
 
 Each check stores a snapshot with views, likes and comments.
 
+**Outdated counts:** the platform APIs answer from several servers that can hold different copies of a count. Seconds apart, YouTube can answer 84,210, then 84,288, then 84,210 again for the same video. The app handles this in three ways:
+- **Repeated reads:** YouTube view counts are read `YOUTUBE_VIEW_READS` (3) times per check and the highest is kept. Each extra read costs 1 unit per 50 videos.
+- **12-hour rule:** a reading lower than one taken in the last 12 hours is not stored, on any platform; the higher real reading is kept. A real decrease, for example YouTube removing spam views, still shows once it persists beyond 12 hours.
+- **Repair at startup:** videos whose current number came from such an outdated count get the higher real reading back. Saved readings are never changed. In **View history** they show greyed out as "ignored".
+
 | Field | Calculation |
 | --- | --- |
 | **Current Views** | Views from the API at the latest check. Facebook: `total_video_views`, or the Reels play count for reels |

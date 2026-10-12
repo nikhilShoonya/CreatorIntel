@@ -50,6 +50,8 @@ export interface VpSnapshot {
   comments: number | null;
   engagement_rate: number | null;
   views_change: number | null;
+  /** An older, lower count the API returned right after a newer one - ignored in every calculation. */
+  outdated: boolean;
 }
 
 export interface VpHistory {

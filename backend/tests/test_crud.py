@@ -33,6 +33,35 @@ def client():
         yield test_client
 
 
+def _wait_upload(client, upload_id, timeout=10):
+    deadline = time.time() + timeout
+    while time.time() < deadline and client.get(f"/api/uploads/{upload_id}").json()["status"] == "processing":
+        time.sleep(0.05)
+
+
+def test_refresh_data_on_upload_page_refreshes_only_that_upload(client):
+    first = client.post("/api/uploads", files={"file": (
+        "a.csv", b"Channel Name,Channel Link\nNitin,https://www.youtube.com/@nitinnitro\n", "text/csv")}).json()
+    second = client.post("/api/uploads", files={"file": (
+        "b.csv", b"Channel Name,Channel Link\nTrading,https://www.instagram.com/tradingtech31/\n", "text/csv")}).json()
+    _wait_upload(client, first["id"])
+    _wait_upload(client, second["id"])
+
+    started = client.post("/api/creators/refresh-all", params={"upload_id": second["id"]})
+    assert started.status_code == 202 and started.json()["message"] == "Refreshing 1 creators"
+    deadline = time.time() + 10
+    while time.time() < deadline and client.get("/api/creators/refresh-status").json()["running"]:
+        time.sleep(0.05)
+
+    everything = client.post("/api/creators/refresh-all").json()  # Creator List: every creator
+    assert everything["message"] == "Refreshing 2 creators"
+    deadline = time.time() + 10
+    while time.time() < deadline and client.get("/api/creators/refresh-status").json()["running"]:
+        time.sleep(0.05)
+    for upload in (first, second):
+        client.delete(f"/api/uploads/{upload['id']}", params={"delete_creators": True})
+
+
 def _wait_final(client, creator_id, timeout=10):
     deadline = time.time() + timeout
     while time.time() < deadline:

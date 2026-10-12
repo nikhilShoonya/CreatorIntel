@@ -106,6 +106,9 @@ def _dt(value: Any) -> datetime | None:
 
 
 # --------------------------------------------------------------------- YouTube
+EXTRA_READ_DELAY_SECONDS = 1.0  # pause between repeated statistics reads (they reach different YouTube servers)
+
+
 class YouTubeVideoClient:
     def __init__(self, settings: Settings | None = None, client: httpx.AsyncClient | None = None):
         self.settings = settings or get_settings()
@@ -149,10 +152,34 @@ class YouTubeVideoClient:
         raise PlatformError(PlatformError.CONFIG, "YouTube API is not configured (YOUTUBE_API_KEY)")
 
     async def videos(self, video_ids: list[str]) -> dict[str, VideoMetrics]:
-        """Statistics + snippet for up to 50 videos per request. Missing IDs are absent from the result."""
+        """Statistics + snippet for up to 50 videos per request. Missing IDs are absent from the result.
+
+        YouTube answers from several servers that can hold different copies of a view count (an older copy can
+        be ~100 views behind). The statistics are therefore read YOUTUBE_VIEW_READS times and the highest view
+        count of each video is kept - every value is one YouTube itself returned.
+        """
         found: dict[str, VideoMetrics] = {}
         for start in range(0, len(video_ids), 50):
             batch = video_ids[start : start + 50]
+            found.update(await self._read_batch(batch))
+            for _ in range(self.settings.youtube_view_reads - 1):
+                await asyncio.sleep(EXTRA_READ_DELAY_SECONDS)
+                try:
+                    data = await self._get("videos", {"part": "statistics", "id": ",".join(batch), "maxResults": 50})
+                except PlatformError:
+                    break  # the first reading is complete on its own
+                for item in data.get("items") or []:
+                    current, stats = found.get(item.get("id")), item.get("statistics") or {}
+                    views = _int(stats.get("viewCount"))
+                    if current is not None and views is not None and (current.views is None or views > current.views):
+                        current.views = views
+                        current.likes = _int(stats.get("likeCount"))
+                        current.comments = _int(stats.get("commentCount"))
+        return found
+
+    async def _read_batch(self, batch: list[str]) -> dict[str, VideoMetrics]:
+        found: dict[str, VideoMetrics] = {}
+        if batch:
             data = await self._get("videos", {"part": "snippet,statistics", "id": ",".join(batch), "maxResults": 50})
             for item in data.get("items") or []:
                 snippet, stats = item.get("snippet") or {}, item.get("statistics") or {}

@@ -101,6 +101,10 @@ class VideoTracker:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def resume_after_restart(self) -> None:
+        try:  # current numbers that came from an outdated (lower) API count get the real higher reading back
+            await asyncio.to_thread(repo.repair_outdated_counts)
+        except Exception:
+            logger.exception("vt_repair_outdated_counts_failed")
         video_ids = await asyncio.to_thread(repo.recover_after_restart)
         if video_ids:
             log_event(logger, logging.INFO, "vt_resume", videos=len(video_ids))

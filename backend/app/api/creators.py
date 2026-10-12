@@ -93,22 +93,23 @@ def creator_facets(
 
 @router.post("/refresh-all", status_code=202)
 async def refresh_all_creators(
+    upload_id: str | None = Query(default=None, max_length=32, description="Only the creators of this upload"),
     db: Session = Depends(get_db),
     orchestrator: EnrichmentOrchestrator = Depends(get_orchestrator),
 ):
-    """Re-fetch fresh platform data for every creator with a valid link (runs in the background)."""
+    """Re-fetch fresh platform data for every creator with a valid link - or only one upload's creators
+    (the Upload & Analyze page) - in the background."""
     if orchestrator.bulk_refresh_running:
         return {"message": "A refresh is already running", **orchestrator.bulk_refresh_status()}
 
     def queue() -> list[int]:
-        ids = list(
-            db.scalars(
-                select(Creator.id).where(
-                    Creator.platform.in_(("youtube", "instagram")),
-                    Creator.status.not_in(CreatorStatus.ACTIVE),
-                )
-            )
+        stmt = select(Creator.id).where(
+            Creator.platform.in_(("youtube", "instagram")),
+            Creator.status.not_in(CreatorStatus.ACTIVE),
         )
+        if upload_id:
+            stmt = stmt.where(Creator.id.in_(select(UploadItem.creator_id).where(UploadItem.upload_id == upload_id)))
+        ids = list(db.scalars(stmt))
         if ids:
             db.execute(
                 update(Creator)

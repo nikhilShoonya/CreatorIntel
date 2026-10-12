@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # is invalid or its daily quota is exhausted).
     youtube_api_key: str = ""
     youtube_daily_quota: int = Field(default=10000, ge=1)  # units per key per day (Google's default)
+    # Video Performance: view counts are read this many times per check and the highest is kept (YouTube's
+    # servers can return an older copy of a count). Each extra read costs 1 unit per 50 videos.
+    youtube_view_reads: int = Field(default=3, ge=1, le=5)
 
     meta_app_id: str = ""
     meta_app_secret: str = ""

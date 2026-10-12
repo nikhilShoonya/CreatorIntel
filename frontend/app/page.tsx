@@ -9,10 +9,8 @@ import { ProcessingList } from "@/components/upload/ProcessingList";
 import { UploadCard, validateClientFile } from "@/components/upload/UploadCard";
 import { UploadStatusCard } from "@/components/upload/UploadStatusCard";
 import { useUpload } from "@/hooks/useData";
-import { useStoredValue } from "@/hooks/useStoredValue";
+import { LAST_UPLOAD_KEY, useStoredValue } from "@/hooks/useStoredValue";
 import { api } from "@/lib/api";
-
-const LAST_UPLOAD_KEY = "creatorintel:last-upload";
 
 export default function UploadAnalyzePage() {
   const [lastUploadId, setLastUploadId] = useStoredValue(LAST_UPLOAD_KEY, "");
