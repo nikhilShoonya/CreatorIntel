@@ -35,6 +35,7 @@ from app.video_performance.timeutil import job_times, slot_start_utc
 logger = logging.getLogger("creatorintel.video_performance")
 
 DISCOVERY_LOOKBACK = 15  # latest uploads/media checked per creator per run
+RATE_LIMIT_RETRY_SECONDS = 65 * 60  # Meta's rate limits run per hour: check rate-limited videos again after it
 
 
 class VideoTracker:
@@ -55,6 +56,7 @@ class VideoTracker:
         self._job_locks = {JobType.METRICS_REFRESH: asyncio.Lock(), JobType.CREATOR_DISCOVERY: asyncio.Lock()}
         self._tasks: set[asyncio.Task] = set()
         self._in_flight: set[int] = set()
+        self._retry_pending: set[int] = set()  # rate-limited videos waiting for their automatic re-check
         # Live progress of a running job: job_type -> [done, total]
         self._progress: dict[str, list[int]] = {}
 
@@ -67,6 +69,23 @@ class VideoTracker:
     def start_processing(self, video_ids: list[int]) -> None:
         if video_ids:
             self._schedule(self.process_videos(video_ids), f"vt-process-{video_ids[0]}")
+
+    def _retry_later(self, video_ids: list[int]) -> None:
+        """Check rate-limited videos again once Meta's hourly window has passed (once; not repeated)."""
+        ids = [i for i in video_ids if i not in self._retry_pending]
+        if not ids:
+            return
+        self._retry_pending.update(ids)
+
+        async def retry() -> None:
+            try:
+                await asyncio.sleep(RATE_LIMIT_RETRY_SECONDS)
+            finally:
+                self._retry_pending.difference_update(ids)
+            log_event(logger, logging.INFO, "vt_rate_limit_retry", videos=len(ids))
+            await self.process_videos(ids, retry_rate_limited=False)
+
+        self._schedule(retry(), f"vt-retry-{ids[0]}")
 
     def start_creator_setup(self, creator_id: int, backfill: int) -> None:
         self._schedule(self.setup_creator(creator_id, backfill), f"vt-creator-{creator_id}")
@@ -105,16 +124,24 @@ class VideoTracker:
             await asyncio.to_thread(repo.repair_outdated_counts)
         except Exception:
             logger.exception("vt_repair_outdated_counts_failed")
+        try:  # "Failed" only because of a rate limit while the numbers were fine: back to Tracking, check again later
+            repaired = await asyncio.to_thread(repo.repair_temporary_failures)
+            self._retry_later(repaired)
+        except Exception:
+            logger.exception("vt_repair_temporary_failures_failed")
         video_ids = await asyncio.to_thread(repo.recover_after_restart)
         if video_ids:
             log_event(logger, logging.INFO, "vt_resume", videos=len(video_ids))
             self.start_processing(video_ids)
 
     # ------------------------------------------------------------ processing
-    async def process_videos(self, video_ids: list[int], on_done: Callable[[], None] | None = None) -> tuple[int, int]:
+    async def process_videos(
+        self, video_ids: list[int], on_done: Callable[[], None] | None = None, *, retry_rate_limited: bool = True
+    ) -> tuple[int, int]:
         """Fetch + store metrics for the given videos. Returns (succeeded, failed).
 
         ``on_done`` is called once per video when its result has been saved (used for job progress).
+        Videos refused by a rate limit are checked again automatically an hour later (``retry_rate_limited``).
         """
         # Skip videos another task is already checking (e.g. "Refresh now" during the daily job).
         wanted = sorted(set(video_ids) - self._in_flight)
@@ -125,11 +152,13 @@ class VideoTracker:
             return 0, 0
         self._in_flight.update(wanted)
         try:
-            return await self._process_videos(wanted, on_done)
+            return await self._process_videos(wanted, on_done, retry_rate_limited)
         finally:
             self._in_flight.difference_update(wanted)
 
-    async def _process_videos(self, video_ids: list[int], on_done: Callable[[], None] | None = None) -> tuple[int, int]:
+    async def _process_videos(
+        self, video_ids: list[int], on_done: Callable[[], None] | None = None, retry_rate_limited: bool = True
+    ) -> tuple[int, int]:
         started = time.perf_counter()
         rows = await asyncio.to_thread(repo.claim_videos, video_ids)
         results: dict[int, VideoMetrics | PlatformError] = {}
@@ -154,8 +183,17 @@ class VideoTracker:
         for row in rows:
             if row["platform"] == "instagram":
                 by_owner[row["owner_username"]].append(row)
+        rate_limited: PlatformError | None = None
         for owner, owner_rows in by_owner.items():
+            if rate_limited is not None:  # Meta refused: don't spend more calls in this run
+                for row in owner_rows:
+                    results[row["id"]] = rate_limited
+                continue
             await self._instagram_owner(owner, owner_rows, results)
+            first = results.get(owner_rows[0]["id"])
+            if isinstance(first, PlatformError) and first.code == PlatformError.RATE_LIMITED:
+                rate_limited = PlatformError(PlatformError.RATE_LIMITED, "Instagram API rate limit reached")
+                log_event(logger, logging.WARNING, "vt_instagram_rate_limited", skipped_owners=len(by_owner) - 1)
 
         facebook_rows = [r for r in rows if r["platform"] == "facebook"]
         if facebook_rows:
@@ -187,6 +225,12 @@ class VideoTracker:
             for _ in range(len(video_ids) - len(rows)):  # videos that could not be claimed (deleted/paused)
                 on_done()
 
+        if retry_rate_limited:
+            self._retry_later([  # Meta's hourly limits (a YouTube daily quota only resets at midnight Pacific)
+                row["id"] for row in rows
+                if row["platform"] in ("instagram", "facebook") and isinstance(results.get(row["id"]), PlatformError)
+                and results[row["id"]].code == PlatformError.RATE_LIMITED
+            ])
         if to_analyse:
             await self._analyse(to_analyse)
         log_event(

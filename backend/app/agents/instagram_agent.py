@@ -41,10 +41,6 @@ def _graph_error(payload: Any) -> dict:
     return {}
 
 
-def _should_retry(_status: int, payload: Any) -> bool:
-    return _graph_error(payload).get("code") in _RATE_LIMIT_CODES
-
-
 def _to_int(value: Any) -> int | None:
     try:
         return int(value) if value is not None else None
@@ -98,7 +94,8 @@ class InstagramCollector:
             service="Instagram Graph API",
             params={**params, **self._auth_params()},
             headers={"Authorization": f"Bearer {self.settings.meta_access_token}"},
-            should_retry=_should_retry,
+            # Rate-limit answers are not retried: Meta's limits run per hour, so an immediate retry never
+            # succeeds and only uses up more of the allowance.
             client=self.client,
             on_attempt=record_instagram_call,
             on_response=record_meta_usage,

@@ -24,7 +24,7 @@ from app.video_performance.models import (
 )
 from app.video_performance.platforms import ChannelInfo, DiscoveredVideo, PlatformError, VideoMetrics
 from app.video_performance.sentiment import SentimentResult
-from app.video_performance.timeutil import local_day_start_utc
+from app.video_performance.timeutil import local_day_start_utc, tracking_tz
 from app.video_performance.urls import ParsedVideo
 
 
@@ -141,6 +141,35 @@ def repair_outdated_counts() -> int:
     return repaired
 
 
+def repair_temporary_failures() -> list[int]:
+    """Videos marked Failed only because a check hit a rate limit / quota while they already had good numbers
+    (before such failures were treated as temporary): back to Tracking, "last checked" = last successful check.
+    Returns their ids so they can be checked again."""
+    with session_scope() as db:
+        videos = db.scalars(
+            select(VtVideo).where(
+                VtVideo.status == VideoStatus.FAILED,
+                VtVideo.current_views.is_not(None),
+                or_(VtVideo.status_reason.like("%rate limit reached%"), VtVideo.status_reason.like("%quota exceeded%")),
+            )
+        ).all()
+        for video in videos:
+            last_ok = db.scalar(select(func.max(VtViewSnapshot.captured_at)).where(VtViewSnapshot.video_id == video.id))
+            message = (video.status_reason or "").split(": ", 1)[-1]  # drop the "@owner: " prefix
+            video.status = VideoStatus.TRACKING
+            video.last_checked_at = last_ok or video.last_checked_at
+            video.status_reason = _temporary_note(PlatformError(PlatformError.RATE_LIMITED, message), last_ok)
+        repaired = [v.id for v in videos]
+        # plus videos still waiting for their automatic re-check (e.g. the backend restarted before it ran)
+        waiting = list(db.scalars(
+            select(VtVideo.id).where(VtVideo.status != VideoStatus.PAUSED,
+                                     VtVideo.status_reason.like(f"Latest check failed%{RETRY_NOTE}"))
+        ))
+    if repaired:
+        log_event(logger, logging.INFO, "vt_temporary_failures_repaired", videos=len(repaired))
+    return list(dict.fromkeys(repaired + waiting))
+
+
 def _previous_day_views(db: Session, video_id: int, now: datetime) -> int | None:
     """Views of the latest check before today (ignoring an outdated lower count taken shortly before it)."""
     day_start = local_day_start_utc(now)
@@ -226,10 +255,26 @@ def _apply_counts(video: VtVideo, views: int | None, likes: int | None, comments
     video.engagement_basis = "views" if rate is not None else None
 
 
+TEMPORARY_ERRORS = (PlatformError.RATE_LIMITED, PlatformError.API)
+RETRY_NOTE = "retried automatically"
+
+
+def _temporary_note(error: PlatformError, last_ok: datetime | None) -> str:
+    when = as_utc(last_ok).astimezone(tracking_tz()).strftime("%d %b, %I:%M %p") if last_ok else "the previous check"
+    return f"Latest check failed ({error.message}) - showing the numbers from {when}; {RETRY_NOTE}"
+
+
 def save_error(video_id: int, error: PlatformError) -> None:
     with session_scope() as db:
         video = db.get(VtVideo, video_id)
         if video is None:
+            return
+        if error.code in TEMPORARY_ERRORS and video.current_views is not None:
+            # A temporary problem (e.g. Meta's hourly rate limit) does not make good numbers wrong: the video
+            # stays tracked, "last checked" keeps the time of the last successful check, and a note says why.
+            if video.status not in (VideoStatus.PAUSED, VideoStatus.PARTIAL):
+                video.status = VideoStatus.TRACKING
+            video.status_reason = _temporary_note(error, video.last_checked_at)
             return
         if video.status != VideoStatus.PAUSED:
             if error.code == PlatformError.UNSUPPORTED:

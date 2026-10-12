@@ -284,7 +284,8 @@ class InstagramVideoClient:
                 "GET", f"{GRAPH_API}/{self.settings.meta_api_version}/{path}", service="Instagram Graph API",
                 params=self._params(**params),
                 headers={"Authorization": f"Bearer {self.settings.meta_access_token.strip()}"},
-                should_retry=lambda _s, p: isinstance(p, dict) and (p.get("error") or {}).get("code") in _RATE_CODES,
+                # Rate-limit answers are not retried here: Meta's limits run per hour, so retrying within
+                # seconds never succeeds and only uses up more of the allowance.
                 client=self.client,
                 on_attempt=record_instagram_call,
                 on_response=record_meta_usage,
@@ -421,7 +422,7 @@ class FacebookVideoClient:
                 "GET", f"{GRAPH_API}/{self.settings.meta_api_version}/{path}", service="Facebook Graph API",
                 params={**params, **self._proof(token)},
                 headers={"Authorization": f"Bearer {token}"},
-                should_retry=lambda _s, p: isinstance(p, dict) and (p.get("error") or {}).get("code") in _RATE_CODES,
+                # no retry on rate-limit answers (hourly limits - an immediate retry only uses more of them)
                 client=self.client,
                 on_attempt=record_facebook_call,
                 on_response=record_meta_usage,
