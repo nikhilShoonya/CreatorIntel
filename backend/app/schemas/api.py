@@ -99,6 +99,13 @@ class DashboardCreatorOut(CreatorOut):
     analyzed_at: UTCDateTime | None
 
 
+class GrowthPoint(BaseModel):
+    day: str  # local date (YYYY-MM-DD)
+    total: int  # creators added up to this day (cumulative)
+    analysed: int  # of those, currently analysed successfully (Completed)
+    added: int  # creators added on this day
+
+
 class CreatorDashboardOut(BaseModel):
     """Creator Analytics dashboard - aggregated from the stored creator records only (no API / AI calls)."""
 
@@ -118,6 +125,12 @@ class CreatorDashboardOut(BaseModel):
     recently_analysed: list[DashboardCreatorOut]
     attention: list[DashboardCreatorOut]
     last_updated_at: UTCDateTime | None
+    # Selected period (0 = all time): creators added in it, and growth over it.
+    range_days: int = 0
+    added_in_range: int = 0
+    added_by_platform: list[CountItem] = []
+    growth: list[GrowthPoint] = []
+    timezone: str = ""
 
 
 class FacetsResponse(BaseModel):

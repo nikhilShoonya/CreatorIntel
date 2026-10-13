@@ -114,8 +114,34 @@ def test_opening_the_dashboard_makes_no_external_calls(api, seeded, monkeypatch)
 
 def test_empty_database(monkeypatch):
     monkeypatch.setattr(dashboard_service, "_grouped", lambda: [])
-    monkeypatch.setattr(dashboard_service, "_creators", lambda *_args: [])
+    monkeypatch.setattr(dashboard_service, "_creators", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(dashboard_service, "_ai_pending", lambda: 0)
-    data = dashboard_service.creator_dashboard()
+    monkeypatch.setattr(dashboard_service, "_added", lambda: [])
+    data = dashboard_service.creator_dashboard(30)
     assert data.total == 0 and data.analysed == 0 and data.average_engagement_rate is None
     assert data.by_platform == [] and data.by_genre == [] and data.recently_analysed == [] and data.last_updated_at is None
+    assert data.added_in_range == 0 and len(data.growth) == 30 and all(p.total == 0 for p in data.growth)
+    assert dashboard_service.creator_dashboard(0).growth[-1].total == 0  # all time, nothing added: one empty day
+
+
+def test_growth_trend_and_added_in_period(api, seeded):
+    from app.models.entities import Creator as CreatorModel
+
+    with session_scope() as db:  # one seeded creator was added 40 days ago (outside a 30-day period)
+        db.get(CreatorModel, seeded[0]).created_at = utcnow() - timedelta(days=40)
+    month = api.get(DASHBOARD, params={"days": 30}).json()
+    week = api.get(DASHBOARD, params={"days": 7}).json()
+    fortnight = api.get(DASHBOARD, params={"days": 14}).json()
+    assert len(fortnight["growth"]) == 14 and fortnight["growth"][-1]["total"] == fortnight["total"]
+    everything = api.get(DASHBOARD, params={"days": 0}).json()
+
+    assert len(month["growth"]) == 30 and len(week["growth"]) == 7
+    assert month["growth"][-1]["total"] == month["total"] == everything["growth"][-1]["total"]  # cumulative
+    assert month["growth"][0]["total"] >= 1  # creators added before the period are the starting point
+    assert sum(p["added"] for p in month["growth"]) == month["added_in_range"] == month["total"] - month["growth"][0]["total"] + month["growth"][0]["added"]
+    assert everything["added_in_range"] == everything["total"] and month["added_in_range"] < month["total"]
+    completed = next(i["count"] for i in month["by_status"] if i["value"] == "Completed")
+    assert month["growth"][-1]["analysed"] == completed  # "successfully analysed" = Completed
+    assert sum(i["count"] for i in month["added_by_platform"]) == month["added_in_range"]
+    assert api.get(DASHBOARD, params={"days": 400}).status_code == 422
+    assert len(month["recently_analysed"]) <= 10

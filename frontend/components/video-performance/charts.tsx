@@ -177,6 +177,123 @@ export function TrendChart({
   );
 }
 
+export interface MultiSeries {
+  label: string;
+  color: string;
+  values: number[];
+}
+
+/** Several lines over the same x-axis (e.g. total vs analysed creators), with legend and hover tooltip. */
+export function MultiTrendChart({
+  labels,
+  fullLabels,
+  series,
+  height = 230,
+}: {
+  labels: string[];
+  fullLabels: string[];
+  series: MultiSeries[];
+  height?: number;
+}) {
+  const [ref, width] = useWidth<HTMLDivElement>();
+  const [hover, setHover] = useState<number | null>(null);
+  const pad = { top: 12, right: 12, bottom: 26, left: 36 };
+  const count = labels.length;
+  const top = Math.max(1, ...series.flatMap((s) => s.values));
+  // counts are whole numbers: small ranges get one tick per unit, larger ones "nice" whole steps
+  const ticks = top <= 5 ? Array.from({ length: top + 1 }, (_, i) => i) : niceTicks(0, top).map(Math.round);
+  const yMax = ticks[ticks.length - 1];
+  const innerW = Math.max(width - pad.left - pad.right, 1);
+  const innerH = height - pad.top - pad.bottom;
+  const x = (i: number) => pad.left + (count > 1 ? (i / (count - 1)) * innerW : innerW / 2);
+  const y = (v: number) => pad.top + innerH - (v / (yMax || 1)) * innerH;
+  const labelEvery = Math.ceil(count / Math.max(Math.floor(innerW / 64), 1));
+  const dots = count <= 45;
+
+  function onMove(event: ReactPointerEvent<SVGRectElement>) {
+    const box = event.currentTarget.getBoundingClientRect();
+    const index = Math.round(((event.clientX - box.left) / box.width) * (count - 1));
+    setHover(Math.min(Math.max(index, 0), count - 1));
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap justify-end gap-4 text-xs text-slate-600">
+        {series.map((s) => (
+          <span key={s.label} className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-4 rounded-full" style={{ background: s.color }} />
+            {s.label}
+          </span>
+        ))}
+      </div>
+      <div ref={ref} className="relative w-full" style={{ height }}>
+        {width > 0 && count > 0 && (
+          <svg width={width} height={height} className="overflow-visible">
+            <defs>
+              {series.map((s, n) => (
+                <linearGradient key={s.label} id={`multi-${n}-${s.color.replace("#", "")}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stopColor={s.color} stopOpacity={0.2} />
+                  <stop offset="1" stopColor={s.color} stopOpacity={0.02} />
+                </linearGradient>
+              ))}
+            </defs>
+            {ticks.map((t) => (
+              <g key={t}>
+                <line x1={pad.left} x2={width - pad.right} y1={y(t)} y2={y(t)} stroke="#eef0f4" />
+                <text x={pad.left - 8} y={y(t)} dy="0.32em" textAnchor="end" className="fill-slate-400 text-[11px] tabular-nums">
+                  {t}
+                </text>
+              </g>
+            ))}
+            {labels.map((label, i) =>
+              // every n-th label plus the last one, skipping a regular label that would collide with the last
+              (i % labelEvery === 0 && count - 1 - i >= labelEvery * 0.6) || i === count - 1 ? (
+                <text key={fullLabels[i]} x={x(i)} y={height - 6} textAnchor="middle" className="fill-slate-400 text-[11px]">
+                  {label}
+                </text>
+              ) : null,
+            )}
+            {series.map((s, n) => {
+              const line = s.values.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join(" ");
+              const area = count > 1 ? `${line} L${x(count - 1)},${y(0)} L${x(0)},${y(0)} Z` : "";
+              return (
+                <g key={s.label}>
+                  {area && <path d={area} fill={`url(#multi-${n}-${s.color.replace("#", "")})`} />}
+                  <path d={line} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" />
+                  {s.values.map((v, i) =>
+                    dots || hover === i ? (
+                      <circle key={i} cx={x(i)} cy={y(v)} r={hover === i ? 4.5 : 2.5} fill="#fff" stroke={s.color} strokeWidth={2} />
+                    ) : null,
+                  )}
+                </g>
+              );
+            })}
+            {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={pad.top} y2={pad.top + innerH} stroke="#64748b" strokeOpacity={0.3} strokeDasharray="3 3" />}
+            <rect x={pad.left} y={pad.top} width={innerW} height={innerH} fill="transparent" onPointerMove={onMove} onPointerLeave={() => setHover(null)} />
+          </svg>
+        )}
+        {hover !== null && (
+          <div
+            className="pointer-events-none absolute z-10 min-w-[150px] rounded-lg border border-line bg-white px-3 py-2 text-xs shadow-lg shadow-slate-900/10"
+            style={{ left: Math.min(Math.max(x(hover) - 75, 0), Math.max(width - 160, 0)), top: 0 }}
+          >
+            <p className="text-muted">{fullLabels[hover]}</p>
+            {series.map((s) => (
+              <p key={s.label} className="mt-0.5 flex items-center justify-between gap-3">
+                <span className="inline-flex items-center gap-1.5 text-slate-600">
+                  <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
+                  {s.label}
+                </span>
+                <span className="font-semibold tabular-nums text-ink">{s.values[hover]}</span>
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function niceTicks(min: number, max: number, count = 5): number[] {
   if (max === min) return max === 0 ? [0, 1] : [Math.min(0, min), max * 1.2 || 1];
   const rough = (max - min) / (count - 1);

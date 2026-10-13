@@ -97,6 +97,19 @@ export interface CreatorDashboard {
   recently_analysed: DashboardCreator[];
   attention: DashboardCreator[];
   last_updated_at: string | null;
+  /** Selected period (0 = all time): creators added in it and growth over it. */
+  range_days: number;
+  added_in_range: number;
+  added_by_platform: CountItem[];
+  growth: GrowthPoint[];
+  timezone: string;
+}
+
+export interface GrowthPoint {
+  day: string; // local date YYYY-MM-DD
+  total: number; // creators added up to this day
+  analysed: number; // of those, currently analysed successfully
+  added: number; // added on this day
 }
 
 export interface Facets {

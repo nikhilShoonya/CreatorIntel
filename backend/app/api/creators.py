@@ -94,9 +94,11 @@ def creator_facets(
 
 
 @router.get("/dashboard", response_model=CreatorDashboardOut)
-def creator_analytics_dashboard():
+def creator_analytics_dashboard(
+    days: int = Query(default=30, ge=0, le=366, description="Period for 'added' numbers and the growth trend (0 = all time)"),
+):
     """Totals and distributions over all stored creators (read-only: no platform API or AI calls)."""
-    return creator_dashboard()
+    return creator_dashboard(days)
 
 
 @router.post("/refresh-all", status_code=202)

@@ -8,7 +8,17 @@ import { Menu } from "@/components/ui/Menu";
 import { api } from "@/lib/api";
 import type { CreatorFilters } from "@/types";
 
-export function ExportMenu({ filters, disabled, onError }: { filters: CreatorFilters; disabled?: boolean; onError: (message: string) => void }) {
+export function ExportMenu({
+  filters,
+  disabled,
+  onError,
+  variant = "soft",
+}: {
+  filters: CreatorFilters;
+  disabled?: boolean;
+  onError: (message: string) => void;
+  variant?: "soft" | "primary";
+}) {
   const [busy, setBusy] = useState(false);
 
   async function run(kind: "excel" | "csv") {
@@ -27,7 +37,7 @@ export function ExportMenu({ filters, disabled, onError }: { filters: CreatorFil
       label="Export"
       width={180}
       trigger={(props) => (
-        <Button variant="soft" disabled={disabled || busy} {...props}>
+        <Button variant={variant} disabled={disabled || busy} {...props}>
           {busy ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
           Export
           <ChevronDown size={14} />
