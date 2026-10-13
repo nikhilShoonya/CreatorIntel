@@ -71,7 +71,9 @@ const ANALYTICS = [
     body: (
       <>
         Use <b>Add creator</b> to add one without a file. The <b>⋮</b> menu on each row lets you retry, re-analyze, edit or
-        delete. <b>Creator List</b> shows everyone analysed so far and <b>History</b> shows past uploads.
+        delete. Under <b>Creator Analytics</b>, the <b>Dashboard</b> summarises all creators (platforms, status, genres,
+        languages, sentiment and who needs attention) and the <b>Creator List</b> shows everyone analysed so far.{" "}
+        <b>History</b> shows past uploads.
       </>
     ),
   },

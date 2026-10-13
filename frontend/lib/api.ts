@@ -1,6 +1,7 @@
 import type {
   ApiUsage,
   ConfigStatus,
+  CreatorDashboard,
   CreatorDetail,
   CreatorFilters,
   CreatorListResponse,
@@ -108,6 +109,7 @@ export const api = {
   listCreators: (filters: CreatorFilters, page: number, pageSize: number) =>
     request<CreatorListResponse>(`/api/creators${toQuery({ ...filters, page, page_size: pageSize })}`),
   facets: (uploadId?: string) => request<Facets>(`/api/creators/facets${toQuery({ upload_id: uploadId })}`),
+  creatorDashboard: () => request<CreatorDashboard>("/api/creators/dashboard"),
   getCreator: (id: number) => request<CreatorDetail>(`/api/creators/${id}`),
   retry: (id: number) => request<{ message: string }>(`/api/creators/${id}/retry`, { method: "POST" }),
   reanalyze: (id: number) => request<{ message: string }>(`/api/creators/${id}/reanalyze`, { method: "POST" }),

@@ -25,6 +25,8 @@ interface Props {
   title: string;
   uploadId?: string;
   initialQuery?: string;
+  /** Filters to start with (e.g. opened from a Creator Analytics dashboard link). */
+  initialFilters?: Pick<CreatorFilters, "platform" | "genre" | "language" | "sentiment" | "status">;
   /** Parent bumps this to force a refetch (e.g. upload progress). */
   refreshToken?: number;
   live?: boolean;
@@ -36,13 +38,23 @@ interface Props {
 
 type Toast = { tone: "success" | "error"; message: string } | null;
 
-export function CreatorsTable({ title, uploadId, initialQuery = "", refreshToken = 0, live = false, headerExtra, emptyState, onChanged }: Props) {
+export function CreatorsTable({
+  title,
+  uploadId,
+  initialQuery = "",
+  initialFilters,
+  refreshToken = 0,
+  live = false,
+  headerExtra,
+  emptyState,
+  onChanged,
+}: Props) {
   const [search, setSearch] = useState(initialQuery);
-  const [platform, setPlatform] = useState("");
-  const [genre, setGenre] = useState("");
-  const [language, setLanguage] = useState("");
-  const [sentiment, setSentiment] = useState("");
-  const [status, setStatus] = useState("");
+  const [platform, setPlatform] = useState(initialFilters?.platform ?? "");
+  const [genre, setGenre] = useState(initialFilters?.genre ?? "");
+  const [language, setLanguage] = useState(initialFilters?.language ?? "");
+  const [sentiment, setSentiment] = useState(initialFilters?.sentiment ?? "");
+  const [status, setStatus] = useState(initialFilters?.status ?? "");
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir } | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);

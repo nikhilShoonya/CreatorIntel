@@ -89,6 +89,37 @@ class CreatorListResponse(BaseModel):
     total_pages: int
 
 
+class CountItem(BaseModel):
+    value: str | None  # the stored value (filter value for the Creator List); None = not analysed / missing
+    label: str
+    count: int
+
+
+class DashboardCreatorOut(CreatorOut):
+    analyzed_at: UTCDateTime | None
+
+
+class CreatorDashboardOut(BaseModel):
+    """Creator Analytics dashboard - aggregated from the stored creator records only (no API / AI calls)."""
+
+    total: int
+    analysed: int  # Completed + Partial
+    needs_attention: int  # Failed + Partial
+    in_progress: int  # Pending + Processing
+    genre_needs_review: int
+    ai_pending: int  # AI analysis waiting for Groq quota (done automatically later)
+    average_engagement_rate: float | None  # mean of creators' views-based engagement rates
+    engagement_sample: int
+    by_platform: list[CountItem]
+    by_status: list[CountItem]
+    by_genre: list[CountItem]
+    by_language: list[CountItem]
+    by_sentiment: list[CountItem]
+    recently_analysed: list[DashboardCreatorOut]
+    attention: list[DashboardCreatorOut]
+    last_updated_at: UTCDateTime | None
+
+
 class FacetsResponse(BaseModel):
     platforms: list[str]
     genres: list[str]

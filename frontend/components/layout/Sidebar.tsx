@@ -14,26 +14,35 @@ import {
   Settings,
   Table2,
   Upload,
+  Users,
+  type LucideIcon,
 } from "lucide-react";
 
 import { HelpDialog } from "./HelpDialog";
 
-const NAV = [
-  { href: "/", label: "Upload & Analyze", Icon: Upload },
+type NavItem = { href: string; label: string; Icon: LucideIcon };
+
+const UPLOAD: NavItem = { href: "/", label: "Upload & Analyze", Icon: Upload };
+const HISTORY: NavItem = { href: "/history", label: "History", Icon: History };
+const SETTINGS: NavItem = { href: "/settings", label: "Settings", Icon: Settings };
+
+// Creator Analytics: dashboard + the creator list (the list keeps its /creators address)
+const CREATOR_ANALYTICS: NavItem[] = [
+  { href: "/creator-analytics", label: "Dashboard", Icon: LayoutDashboard },
   { href: "/creators", label: "Creator List", Icon: Table2 },
-  { href: "/history", label: "History", Icon: History },
 ];
 
-const SETTINGS = { href: "/settings", label: "Settings", Icon: Settings };
-
 // Independent module: Video Performance
-const VIDEO_PERFORMANCE = [
+const VIDEO_PERFORMANCE: NavItem[] = [
   { href: "/video-performance", label: "Dashboard", Icon: LayoutDashboard },
   { href: "/video-performance/library", label: "Tracking Library", Icon: LibraryBig },
 ];
 
+// Dashboards are exact matches so they are not also active on the pages below them.
+const EXACT = new Set(["/", "/video-performance", "/creator-analytics"]);
+
 function isActive(pathname: string, href: string) {
-  if (href === "/" || href === "/video-performance") return pathname === href;
+  if (EXACT.has(href)) return pathname === href;
   return pathname.startsWith(href);
 }
 
@@ -42,8 +51,19 @@ const itemClass = (active: boolean) =>
     active ? "bg-accent-soft text-accent" : "text-slate-600 hover:bg-slate-50 hover:text-ink"
   }`;
 
-function VideoPerformanceGroup({ pathname }: { pathname: string }) {
-  const inModule = pathname.startsWith("/video-performance");
+function NavLink({ item, pathname, size = 18 }: { item: NavItem; pathname: string; size?: number }) {
+  const active = isActive(pathname, item.href);
+  return (
+    <Link href={item.href} prefetch={true} aria-current={active ? "page" : undefined} className={itemClass(active)}>
+      <item.Icon size={size} aria-hidden="true" />
+      {item.label}
+    </Link>
+  );
+}
+
+/** Expandable section: open while one of its pages is shown, and toggled by clicking its title. */
+function NavGroup({ label, Icon, items, pathname }: { label: string; Icon: LucideIcon; items: NavItem[]; pathname: string }) {
+  const inModule = items.some((item) => isActive(pathname, item.href));
   const [expanded, setExpanded] = useState<boolean | null>(null); // null = follow the current route
   const open = expanded ?? inModule;
   return (
@@ -54,21 +74,15 @@ function VideoPerformanceGroup({ pathname }: { pathname: string }) {
         aria-expanded={open}
         className={`${itemClass(false)} w-full ${inModule ? "text-ink" : ""}`}
       >
-        <Clapperboard size={18} aria-hidden="true" />
-        <span className="flex-1 text-left">Video Performance</span>
+        <Icon size={18} aria-hidden="true" />
+        <span className="flex-1 text-left">{label}</span>
         <ChevronDown size={16} className={`text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
       </button>
       {open && (
         <div className="mt-1 space-y-1 border-l border-line pl-2 ml-5">
-          {VIDEO_PERFORMANCE.map(({ href, label, Icon }) => {
-            const active = isActive(pathname, href);
-            return (
-              <Link key={href} href={href} prefetch={true} aria-current={active ? "page" : undefined} className={itemClass(active)}>
-                <Icon size={16} aria-hidden="true" />
-                {label}
-              </Link>
-            );
-          })}
+          {items.map((item) => (
+            <NavLink key={item.href} item={item} pathname={pathname} size={16} />
+          ))}
         </div>
       )}
     </div>
@@ -90,26 +104,12 @@ export function Sidebar() {
         </span>
       </Link>
 
-      <nav className="flex-1 space-y-1 px-3" aria-label="Main">
-        {NAV.map(({ href, label, Icon }) => {
-          const active = isActive(pathname, href);
-          return (
-            <Link key={href} href={href} prefetch={true} aria-current={active ? "page" : undefined} className={itemClass(active)}>
-              <Icon size={18} aria-hidden="true" />
-              {label}
-            </Link>
-          );
-        })}
-        <VideoPerformanceGroup pathname={pathname} />
-        <Link
-          href={SETTINGS.href}
-          prefetch={true}
-          aria-current={isActive(pathname, SETTINGS.href) ? "page" : undefined}
-          className={itemClass(isActive(pathname, SETTINGS.href))}
-        >
-          <SETTINGS.Icon size={18} aria-hidden="true" />
-          {SETTINGS.label}
-        </Link>
+      <nav className="flex-1 space-y-1 overflow-y-auto px-3" aria-label="Main">
+        <NavLink item={UPLOAD} pathname={pathname} />
+        <NavGroup label="Creator Analytics" Icon={Users} items={CREATOR_ANALYTICS} pathname={pathname} />
+        <NavGroup label="Video Performance" Icon={Clapperboard} items={VIDEO_PERFORMANCE} pathname={pathname} />
+        <NavLink item={HISTORY} pathname={pathname} />
+        <NavLink item={SETTINGS} pathname={pathname} />
       </nav>
 
       <button
@@ -132,15 +132,23 @@ export function Sidebar() {
 
 export function MobileNav() {
   const pathname = usePathname();
+  const items: NavItem[] = [
+    UPLOAD,
+    ...CREATOR_ANALYTICS.map((item) => (item.label === "Dashboard" ? { ...item, label: "Creator Dashboard" } : item)),
+    ...VIDEO_PERFORMANCE.map((item) => ({ ...item, label: `Video ${item.label}` })),
+    HISTORY,
+    SETTINGS,
+  ];
   return (
     <nav className="flex gap-1 overflow-x-auto border-b border-line bg-white px-3 py-2 lg:hidden" aria-label="Main">
-      {[...NAV, ...VIDEO_PERFORMANCE.map((item) => ({ ...item, label: `Video ${item.label}` })), SETTINGS].map(({ href, label, Icon }) => {
+      {items.map(({ href, label, Icon }) => {
         const active = isActive(pathname, href);
         return (
           <Link
             key={href}
             href={href}
             prefetch={true}
+            aria-current={active ? "page" : undefined}
             className={`flex shrink-0 items-center gap-2 rounded-md px-3 py-1.5 text-sm ${
               active ? "bg-accent-soft text-accent" : "text-slate-600"
             }`}

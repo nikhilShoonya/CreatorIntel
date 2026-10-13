@@ -68,6 +68,37 @@ export interface CreatorListResponse {
   total_pages: number;
 }
 
+/** One bar of a dashboard distribution; `value` is the Creator List filter value (null = not analysed). */
+export interface CountItem {
+  value: string | null;
+  label: string;
+  count: number;
+}
+
+export interface DashboardCreator extends Creator {
+  analyzed_at: string | null;
+}
+
+/** Creator Analytics dashboard - aggregated from all stored creators (no API / AI calls). */
+export interface CreatorDashboard {
+  total: number;
+  analysed: number;
+  needs_attention: number;
+  in_progress: number;
+  genre_needs_review: number;
+  ai_pending: number;
+  average_engagement_rate: number | null;
+  engagement_sample: number;
+  by_platform: CountItem[];
+  by_status: CountItem[];
+  by_genre: CountItem[];
+  by_language: CountItem[];
+  by_sentiment: CountItem[];
+  recently_analysed: DashboardCreator[];
+  attention: DashboardCreator[];
+  last_updated_at: string | null;
+}
+
 export interface Facets {
   platforms: string[];
   genres: string[];

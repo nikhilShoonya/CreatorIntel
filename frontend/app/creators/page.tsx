@@ -14,12 +14,21 @@ function CreatorList() {
   const uploadParam = params.get("upload");
   const uploadId = uploadParam && /^[a-f0-9]{32}$/.test(uploadParam) ? uploadParam : undefined;
   const { data: upload } = useUpload(uploadId ?? null);
+  // Filters in the link (e.g. from the Creator Analytics dashboard): /creators?status=Failed
+  const initialFilters = {
+    platform: params.get("platform") ?? undefined,
+    genre: params.get("genre") ?? undefined,
+    language: params.get("language") ?? undefined,
+    sentiment: params.get("sentiment") ?? undefined,
+    status: params.get("status") ?? undefined,
+  };
 
   return (
     <CreatorsTable
-      key={`${q}|${uploadId ?? ""}`}
+      key={`${q}|${uploadId ?? ""}|${Object.values(initialFilters).join("|")}`}
       title={uploadId ? "Creators in upload" : "All Creators"}
       initialQuery={q}
+      initialFilters={initialFilters}
       uploadId={uploadId}
       live={upload?.status === "processing"}
       headerExtra={

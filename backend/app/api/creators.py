@@ -14,6 +14,7 @@ from app.schemas.api import (
     ActionResponse,
     BulkDeleteIn,
     CreatorCreateIn,
+    CreatorDashboardOut,
     CreatorDetailOut,
     CreatorListResponse,
     CreatorOut,
@@ -29,6 +30,7 @@ from app.services.creator_service import (
     delete_creators,
     update_creator,
 )
+from app.services.creator_dashboard import creator_dashboard
 from app.services.creator_query import CreatorFilters, build_creator_query
 from app.services.orchestrator import EnrichmentOrchestrator
 
@@ -89,6 +91,12 @@ def creator_facets(
     return FacetsResponse(
         platforms=platforms, genres=genres, languages=languages, sentiments=sentiments, statuses=statuses
     )
+
+
+@router.get("/dashboard", response_model=CreatorDashboardOut)
+def creator_analytics_dashboard():
+    """Totals and distributions over all stored creators (read-only: no platform API or AI calls)."""
+    return creator_dashboard()
 
 
 @router.post("/refresh-all", status_code=202)

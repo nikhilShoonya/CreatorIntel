@@ -178,7 +178,8 @@ npm run build && npm start  # production
 | Page | What it does |
 | --- | --- |
 | **Upload & Analyze** (`/`) | Upload an Excel/CSV of creators and follow its progress |
-| **Creator List** (`/creators`) | All analysed creators: search, filter, sort, details popup, add/edit/delete, retry, re-analyse, export |
+| **Creator Analytics → Dashboard** (`/creator-analytics`) | Totals and distributions over all stored creators (platform, status, genre, language, sentiment, average engagement), recently analysed creators and those needing attention. Read-only: opening it never calls YouTube, Instagram or the AI. Clicking a number opens the Creator List with that filter |
+| **Creator Analytics → Creator List** (`/creators`) | All analysed creators: search, filter, sort, details popup, add/edit/delete, retry, re-analyse, export. Filters can be set in the link, e.g. `/creators?status=Failed` |
 | **History** (`/history`) | Past uploads, their file data, download, delete |
 | **Video Performance → Dashboard** | Totals, daily views trend, sentiment breakdown, top / most engaging videos, job status with **Run now** |
 | **Video Performance → Tracking Library** | **Tracked videos** (table, filters, history, bulk actions) and **Uploads** (each uploaded video list) |
