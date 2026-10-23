@@ -506,12 +506,6 @@ def video_contents(video_ids: list[int]) -> dict[int, tuple[str | None, str | No
     return {vid: rows[vid] for vid in video_ids if vid in rows}
 
 
-def video_content(video_id: int) -> tuple[str | None, str | None]:
-    with read_scope() as db:
-        row = db.execute(select(VtVideo.title, VtVideo.caption).where(VtVideo.id == video_id)).first()
-        return (row.title, row.caption) if row else (None, None)
-
-
 DOWN_STOPPED_NOTE = "no longer checked daily - use Retry to check again"
 
 
@@ -828,18 +822,6 @@ def _add_video(
         return video.id
 
 
-def existing_identifiers(platform_ids: list[tuple[str, str]]) -> set[tuple[str, str]]:
-    if not platform_ids:
-        return set()
-    with read_scope() as db:
-        conditions = [and_(VtVideo.platform == p, VtVideo.video_identifier == i) for p, i in platform_ids]
-        found = set()
-        for start in range(0, len(conditions), 200):
-            rows = db.execute(select(VtVideo.platform, VtVideo.video_identifier).where(or_(*conditions[start : start + 200])))
-            found.update((r.platform, r.video_identifier) for r in rows)
-        return found
-
-
 def update_video(
     video_id: int,
     *,
@@ -1012,11 +994,6 @@ def delete_creator(creator_id: int, delete_videos_too: bool) -> int:
             db.execute(update(VtVideo).where(VtVideo.creator_id == creator_id).values(creator_id=None))
         db.execute(delete(VtCreator).where(VtCreator.id == creator_id))
         return removed
-
-
-def has_sentiment(video_id: int) -> bool:
-    with read_scope() as db:
-        return bool(db.scalar(select(exists().where(VtSentiment.video_id == video_id))))
 
 
 # --------------------------------------------------------------------- import

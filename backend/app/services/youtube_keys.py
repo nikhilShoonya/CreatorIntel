@@ -10,7 +10,6 @@ Keys are identified by a short hash; the key itself is never stored or logged.
 
 import threading
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 from app.services.api_usage import key_fingerprint, next_reset
@@ -69,12 +68,6 @@ def mark_quota_exhausted(key: str) -> None:
 def mark_invalid(key: str) -> None:
     with _lock:
         _skipped_until[key_fingerprint(key)] = time.time() + INVALID_KEY_RETRY_SECONDS
-
-
-def next_available(keys: list[str]) -> datetime | None:
-    with _lock:
-        times = [_skipped_until.get(key_fingerprint(k), 0.0) for k in keys]
-    return datetime.fromtimestamp(min(times), timezone.utc) if times and min(times) > time.time() else None
 
 
 def reset() -> None:

@@ -1,6 +1,6 @@
 import { AlertCircle, Ban, CheckCircle2, Clock3, Frown, Loader2, Meh, PauseCircle, Radio, Smile, VideoOff } from "lucide-react";
 
-import type { VpCreator, VpStatus } from "@/types/videoPerformance";
+import type { VpStatus } from "@/types/videoPerformance";
 
 const base = "inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset";
 
@@ -21,22 +21,6 @@ export function VpStatusBadge({ status, reason }: { status: VpStatus; reason?: s
   return (
     <span className={`${base} ${style.cls}`} title={reason ?? undefined}>
       <style.Icon size={13} className={style.spin ? "animate-spin" : undefined} aria-hidden="true" />
-      {status}
-    </span>
-  );
-}
-
-const CREATOR_STATUS: Record<VpCreator["status"], string> = {
-  Active: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-  Pending: "bg-slate-50 text-slate-600 ring-slate-200",
-  Paused: "bg-slate-50 text-slate-600 ring-slate-200",
-  Failed: "bg-rose-50 text-rose-700 ring-rose-200",
-  Unsupported: "bg-zinc-100 text-zinc-600 ring-zinc-200",
-};
-
-export function CreatorStatusBadge({ status, reason }: { status: VpCreator["status"]; reason?: string | null }) {
-  return (
-    <span className={`${base} ${CREATOR_STATUS[status]}`} title={reason ?? undefined}>
       {status}
     </span>
   );
