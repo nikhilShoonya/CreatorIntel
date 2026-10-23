@@ -1,5 +1,6 @@
 import type {
   ApiUsage,
+  ApifyUsage,
   ConfigStatus,
   CreatorDashboard,
   CreatorDetail,
@@ -7,6 +8,7 @@ import type {
   CreatorListResponse,
   Facets,
   InstagramTokenStatus,
+  MetaQueue,
   YouTubeQuota,
   UploadDetail,
   UploadRows,
@@ -110,10 +112,13 @@ export const api = {
     request<CreatorListResponse>(`/api/creators${toQuery({ ...filters, page, page_size: pageSize })}`),
   facets: (uploadId?: string) => request<Facets>(`/api/creators/facets${toQuery({ upload_id: uploadId })}`),
   /** `days` = period for "added" numbers and the growth trend (0 = all time). */
+  metaQueue: () => request<MetaQueue>("/api/config/meta-queue"),
   creatorDashboard: (days = 30) => request<CreatorDashboard>(`/api/creators/dashboard${toQuery({ days })}`),
   getCreator: (id: number) => request<CreatorDetail>(`/api/creators/${id}`),
   retry: (id: number) => request<{ message: string }>(`/api/creators/${id}/retry`, { method: "POST" }),
   reanalyze: (id: number) => request<{ message: string }>(`/api/creators/${id}/reanalyze`, { method: "POST" }),
+  /** Re-fetch one creator's platform data only (the stored AI analysis is kept). */
+  refreshProfile: (id: number) => request<{ message: string }>(`/api/creators/${id}/refresh-profile`, { method: "POST" }),
   configStatus: () => request<ConfigStatus>("/api/config/status"),
   /** Re-fetch every creator, or only one upload's creators (Upload & Analyze page). */
   refreshAllCreators: (uploadId?: string) =>
@@ -142,6 +147,7 @@ export const api = {
     downloadFile(`/api/uploads/${encodeURIComponent(id)}/rows/export?format=${format}`, `upload_rows.${format === "excel" ? "xlsx" : "csv"}`),
   youtubeQuota: () => request<YouTubeQuota>("/api/config/youtube-quota"),
   apiUsage: () => request<ApiUsage>("/api/config/api-usage"),
+  apifyUsage: () => request<ApifyUsage>("/api/config/apify-usage"),
   instagramToken: (refresh = false) =>
     request<InstagramTokenStatus>(`/api/config/instagram-token${refresh ? "?refresh=true" : ""}`),
 };

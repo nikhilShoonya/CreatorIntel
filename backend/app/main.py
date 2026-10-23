@@ -48,6 +48,10 @@ async def lifespan(app: FastAPI):
     app.state.video_scheduler = video_scheduler
     await video_tracker.resume_after_restart()
     video_scheduler.start()
+    if settings.video_tracking_scheduler_enabled:  # background jobs that call external APIs (off in tests)
+        # Instagram / Facebook work that did not fit Meta's hourly limit continues automatically, oldest first
+        video_tracker.start_meta_queue()
+        orchestrator.start_meta_queue()
     housekeeping = HousekeepingTask(settings)  # deletes old Creator Analytics files after saving their rows
     housekeeping.start()
     keepalive = DatabaseKeepAlive(settings)  # warm connection pool + keep a serverless DB awake in work hours

@@ -11,7 +11,7 @@ CreatorIntel/
 └── frontend/   Next.js 16 + React 19 + TypeScript + Tailwind CSS 4
 ```
 
-**No value is ever invented.** If an API does not return a number it is shown as **N/A**. If the AI is not confident, the field is **Unknown** or **Needs review**. Only official APIs are used: no scraping, no cookies, no private endpoints.
+**No value is ever invented.** Missing numbers are shown as **N/A**, or a previously saved value is retained with a failure/Partial note. If the AI is not confident, the field is **Unknown** or **Needs review**. Creator Analytics, YouTube and Facebook keep their official API integrations. Video Performance can optionally use Apify to scrape public Instagram Reel metrics; this is not Meta's official API or private Instagram Insights. The app does not request Instagram login cookies.
 
 ---
 
@@ -57,7 +57,7 @@ All secrets live in `backend/.env`, which is git-ignored and never sent to the b
 | `DATABASE_URL` | recommended | Neon/PostgreSQL URL. Empty = local SQLite file |
 | `AVERAGE_VIEWS_SAMPLE_SIZE` | optional | Latest videos/reels used for average views and engagement (default 10) |
 | `RECENT_CONTENT_FETCH_LIMIT` | optional | Latest videos/reels fetched per creator (default 20) |
-| `CACHE_TTL_HOURS` | optional | A creator re-uploaded within this window reuses its data (default 24) |
+| `VIDEO_TRACKING_AUTO_REFRESH` | optional | Automatic daily refresh of every tracked video (default `false`: on demand only) |
 | `UPLOAD_FILE_RETENTION_DAYS` | optional | Default 0 = uploaded files are kept forever. N > 0 deletes the stored file after N days (its rows always stay) |
 | `VIDEO_TRACKING_TIMEZONE` | optional | Timezone for the daily jobs and "today" (default `Asia/Kolkata`) |
 | `VIDEO_TRACKING_REFRESH_TIME` | optional | Daily view refresh time, `HH:MM` (default `06:30`) |
@@ -177,10 +177,10 @@ npm run build && npm start  # production
 
 | Page | What it does |
 | --- | --- |
-| **Upload & Analyze** (`/`) | Upload an Excel/CSV of creators and follow its progress |
+| **Upload & Analyze** (`/`, no longer in the sidebar) | The previous upload page; still works at `/`. Creator uploads are now done from the Creator List (**Upload Creators**) |
 | **Creator Analytics → Dashboard** (`/creator-analytics`) | Totals and distributions over all stored creators (platform, status, genre, language, sentiment, average engagement), recently analysed creators and those needing attention. Read-only: opening it never calls YouTube, Instagram or the AI. Clicking a number opens the Creator List with that filter |
 | **Creator Analytics → Creator List** (`/creators`) | All analysed creators: search, filter, sort, details popup, add/edit/delete, retry, re-analyse, export. Filters can be set in the link, e.g. `/creators?status=Failed` |
-| **History** (`/history`) | Past uploads, their file data, download, delete |
+| **History** (`/history`) | Two tabs: **Creator Analytics History** (creator uploads: file data, view creators, delete) and **Video Tracking History** (video lists: view data, rename, re-check, download, delete), with a file-name search |
 | **Video Performance → Dashboard** | Totals, daily views trend, sentiment breakdown, top / most engaging videos, job status with **Run now** |
 | **Video Performance → Tracking Library** | **Tracked videos** (table, filters, history, bulk actions) and **Uploads** (each uploaded video list) |
 | **Settings** | Integration status, YouTube quota per key, Meta usage (Instagram + Facebook), Groq AI usage per key, Meta token health |
@@ -205,17 +205,81 @@ The frontend calls only the backend (`NEXT_PUBLIC_API_URL`) and holds no secrets
 
 | Where | What you can do |
 | --- | --- |
-| Upload & Analyze, Creator List | **Add creator** without an Excel file |
+| Creator List | **Upload Creators** (drag & drop or browse an Excel/CSV; existing creators reuse their data, only new ones are fetched) and **Add creator** without a file |
 | Row **⋮** menu / details popup | **Edit** name or link, **Delete**, **Retry**, **Re-analyze** |
 | Table checkboxes | **Delete selected** |
 | History | **Delete upload**, optionally with its creators that belong to no other upload |
 
-Metrics and AI fields cannot be edited by hand. Use **Refresh Data** or **Re-analyze** instead.
+**Uploading creators that are already in the list:** their stored data is reused as it is, however old, with no YouTube, Instagram or AI calls. Failed and partial creators are not retried by an upload. Only new creators are fetched and analysed, and duplicate rows within a file are still removed.
+
+**Updating one creator:** open its details.
+- **Refresh Profile** fetches the latest YouTube / Instagram data. It does not re-run the AI.
+- **Re-analyze** re-runs only the AI.
+- **Retry** (failed creators) re-runs both.
+
+Metrics and AI fields cannot be edited by hand.
 
 ## 10. Video Performance
 
+### Optional Apify public Reel metrics
+
+This provider extends the existing Tracking Library, uploads, video records, history, exports, dashboard and Groq sentiment. It does not create another tracker. Creator Analytics, Instagram posts/IGTV, creator discovery, YouTube and Facebook retain their current providers. Apify reads public Reel information and does **not** provide private Instagram Insights such as account reach or audience demographics.
+
+Install backend requirements, then obtain a token from [Apify Console > Settings > API & Integrations](https://console.apify.com/settings/integrations). Set these in **backend/.env only**:
+
+```env
+APIFY_API_TOKEN=your_token_here
+APIFY_INSTAGRAM_REEL_ACTOR_ID=apify/instagram-reel-scraper
+APIFY_INSTAGRAM_REEL_ENABLED=true
+APIFY_INCLUDE_SHARES=false
+APIFY_INSTAGRAM_REEL_BATCH_SIZE=25
+APIFY_INSTAGRAM_REEL_MONTHLY_RESULT_LIMIT=1500
+```
+
+The provider defaults to disabled and requires both an enabled flag and a nonempty token. Batch size is validated from 1 to 100. The monthly guard accepts 0 to 1,000,000 units; **0 blocks new runs**. Never put the token in frontend configuration. Shares require explicit opt-in and may cost extra; transcripts and downloaded videos are always disabled. The official [`apify-client` Python SDK](https://docs.apify.com/api/client/python/) starts asynchronous Actor runs from the existing background tracker. The [Actor input schema](https://apify.com/apify/instagram-reel-scraper/input-schema) calls its URL array `username`, but accepts direct Reel URLs. The [Actor output samples](https://apify.com/apify/instagram-reel-scraper) document the source fields used below.
+
+Restart the backend to run migration `0006_apify_reels`. It adds nullable source/provenance fields to existing videos and snapshots, plus provider-job/reservation tables. It preserves existing records and history. Legacy URLs were canonicalized identically for `/p/` and `/reel/`; the migration derives media kind only from unambiguous original upload URLs. Legacy manual records without this evidence stay on Meta until their original link is supplied through Edit or re-upload. Existing uploaded posts remain on Meta. Newly identified `/p/` and `/tv/` links also stay on Meta even though the existing canonical display link uses `/reel/`.
+
+**Upload through Tracking Library > Upload Excel.** A `Video Link` column can contain `https://www.instagram.com/reel/<actual-code>/`, `/reels/<actual-code>/`, or a supported username-bearing Reel URL. No username column is required for Apify. A bare, case-sensitive shortcode is accepted only with `Platform=Instagram`/`ig`, or an explicit `Instagram Reel URL`, `Instagram Reel Link`, `IG Reel URL`, `IG Reel Link` or `Instagram Reel Shortcode` header. Generic `Reel URL` does not establish the platform for a bare code. Original values, hyperlink targets and literal HYPERLINK formulas retain the existing safe parser behaviour; formulas are never executed. Mixed-platform files work as before. Duplicate rows share one tracked video and one Actor input; upload membership/history stay intact. Re-uploading an already tracked video does not itself force a paid refresh: use Retry or Refresh when needed.
+
+**Selection and fallback:** when configured, explicitly identified direct Reels use Apify without Meta owner discovery. Other paths use the existing providers. Missing token/disabled flag leaves Meta available. An Apify failure, usage limit, absent result, auth error or rate limit does **not** trigger additional Meta searches or immediate paid resubmissions. Normal per-video Refresh/Retry, bulk actions and Dashboard Run now use this same tracker. `VIDEO_TRACKING_AUTO_REFRESH` remains **false by default**; enabling Apify does not enable recurring refresh. Explicitly enabling daily metrics refresh will consume units per Reel per run. Paused/completed records retain the existing scheduling rules, including explicit manual refresh of paused videos.
+
+**Metric mapping and history:** exact `shortCode`, `url` and `inputUrl` identities must agree. Results are never matched by position, captions, owner name or a lowercased shortcode. Duplicate/conflicting outputs are rejected. Each valid item is saved independently, including valid items from partial/failed Actor datasets.
+
+| Actor field | Saved behaviour |
+| --- | --- |
+| `videoPlayCount` | Preferred Current Views (including a genuine 0) |
+| `igPlayCount` | Fallback only if videoPlayCount is unavailable; labelled in the note/provenance |
+| `videoViewCount` | Last fallback, explicitly labelled as a different source metric |
+| `likesCount`, `commentsCount` | Likes/comments; missing, invalid or hidden counts remain null |
+| `ownerUsername` | Validated posting handle; cannot replace a verified conflicting owner |
+| `caption`, `timestamp` | Existing caption/publication fields; caption continues through Groq sentiment |
+| `sharesCount` | Source metrics only when explicitly enabled and available |
+| `videoDuration` | Nullable source metrics, in seconds |
+| `error`, `errorDescription` | Controlled item-level failure message; raw provider errors are not exposed |
+
+Separate play/view values and duration are preserved in `source_metrics` on the existing video and snapshot. API/history responses include `metrics_source`, `view_metric` and these raw values; existing visible table columns and export layouts are unchanged. Missing required counts produce Partial. A result with no valid count is a failure, not a successful scrape. Missing counts never fabricate zero or erase stored valid numbers. Engagement is calculated from the current returned likes/comments and canonical count only; missing inputs yield N/A. Previous Views follows the existing local-day snapshot rule **within the same provider/metric basis**. Switching from Meta to Apify or from plays to views establishes a new baseline, with N/A growth until a comparable previous-day snapshot exists. History and dashboard trends do not treat a change in metric basis as gained/lost views. A transient provider failure preserves values and Last Checked and never establishes Video Down. Last Checked advances after a valid matched metrics retrieval, including Partial retrievals.
+
+**Usage guard and recovery:** Settings shows a read-only Apify integration/usage indicator, also available at `GET /api/config/apify-usage`. Before any Actor POST, a cross-process database lock serializes reservations. One unit is reserved per unique submitted URL. Reservations, Actor IDs, remote run IDs, safe diagnostics, returned-item counts and available reported charge events/costs are persistent. The guard counts the submission month's units plus active reservations from earlier months (UTC month boundaries). Settled runs consume at least their reserved units, increased if more dataset items were returned. Failed or uncertain submissions deliberately keep their conservative units. Lowering the limit blocks new work without cancelling existing runs. The default 1,500 units is **not** a promise of fitting any Apify Free-plan dollar credit.
+
+This is an **application estimate, not authoritative billing or a hard account spending cap**. Other Actors, other applications, paid extras, platform/compute charges, changing prices and provider-side billing events can consume shared Apify credits. Reported run costs/events are stored where available but are not integrated account billing. Dataset result counts are not assumed equal to billable events. The Actor receives `max_items` and a 600-second timeout; `max_items` does not guarantee a monetary cap for pay-per-event pricing. Check Apify account billing/limits separately.
+
+One active provider reservation per video prevents duplicate billable jobs across refreshes/processes/restarts. The SDK uses **zero automatic HTTP retries**, especially for the billable start POST. Each batch has a bounded 660-second worker window; known remote runs are resumed on Retry/restart instead of restarted. An uncertain POST response without a saved run ID blocks new submissions for those videos. Settings displays its local job ID. An operator must first inspect Apify Console and either attach the actual remote run ID or confirm no remote run remains active, using `POST /api/video-performance/apify-runs/<local-job-id>/reconcile`:
+
+```json
+{"confirmed_remote_state": true, "remote_run_id": "actual_existing_run_id"}
+```
+
+Alternatively, use `remote_run_id: null` **only after verifying no remote run is active** to release duplicate suppression. This does not refund usage units or start a scrape. Then Retry the affected records. Normal users do not need to use Apify Console; this is exceptional operator recovery for an ambiguous submission. Failed/unknown jobs do not enter Meta's automatic rate-limit queue. Private/deleted/restricted Reels, hidden counts, Actor schema changes and Apify access/credit limits can still prevent retrieval.
+
+**Optional live smoke test (consumes Apify credits):** after installing requirements and restarting/migrating, check Settings, then Add video with one real public Reel URL (for example your supplied `https://www.instagram.com/reel/Dd9E0uFRFW4/`) and leave username empty. If it already exists, Edit its original link if necessary and use Retry/Refresh instead of adding a duplicate. Watch the existing row progress to Tracking/Partial or an actionable error. Verify Current Views, Last Checked, source metric and History. A second same-day refresh creates another check but does not invent a previous-day value. Inspect the saved remote run ID and Settings usage. No live request is required or performed by automated tests; mock test success does not prove that this real Reel is accessible.
+
+Validation from `backend`: `python -m pytest -q`; the suite includes `tests/test_apify_reels.py` and `tests/test_bug_fixes.py::test_models_and_migrations_are_in_sync`. To apply manually: `python -m alembic upgrade head`. From `frontend`: `npx tsc --noEmit` and `npm run lint` (on Windows with restricted PowerShell scripts, use `npx.cmd`/`npm.cmd`). All Apify tests use synthetic responses via mocked HTTP transports and never consume real credits.
+
+The remaining owner-resolution instructions in this section describe the **Meta provider**. They are not prerequisites for Apify-enabled direct Reel tracking.
+
 **Tracking Library → Upload Excel**:
-- **Columns:** `Video Link` is required. `Creator Name`, `Platform` and `Username` are optional. `Username` is needed for an Instagram reel when the link does not contain it.
+- **Columns:** `Video Link` is required. `Creator Name`, `Platform` and `Username` are optional. Apify-enabled direct Instagram Reels need no username. The Meta path needs a known posting account when automatic owner resolution cannot find it.
 - **Example:** `backend/samples/sample_videos.xlsx`.
 - **Single videos:** use **Add video** instead.
 
@@ -231,17 +295,52 @@ Metrics and AI fields cannot be edited by hand. Use **Refresh Data** or **Re-ana
 - Instagram reels/posts;
 - your Page's Facebook videos and reels, including share links.
 
-**Daily refresh:** runs at `VIDEO_TRACKING_REFRESH_TIME` in `VIDEO_TRACKING_TIMEZONE`, inside the backend; no browser is needed.
-- If the backend was off at that time, the refresh runs as soon as it starts.
-- A failed run is retried after 30 minutes.
-- The Dashboard's **Run now** starts it by hand.
+**Refreshing numbers:** views are fetched when a video is first added. After that they change only when you ask:
+- **Refresh** on a video in the Tracking Library updates that video and its history;
+- the Dashboard's **Run now** refreshes every tracked video.
+
+Uploading a file again normally keeps already-tracked videos unchanged. Exception: validated owner metadata fills a missing Instagram owner, and eligible failed/unsupported/partial videos are queued for recovery. Paused/completed videos remain stopped. Original upload membership and history stay intact. The automatic daily refresh is **off**. Setting `VIDEO_TRACKING_AUTO_REFRESH=true` runs it every day at `VIDEO_TRACKING_REFRESH_TIME`, catches up if the backend was off, and retries a failed run after 30 minutes.
 
 **Statuses:**
 - **Tracking:** checked daily.
 - **Video Down:** a video that was seen before is now missing. It is re-checked daily for `VIDEO_TRACKING_DOWN_RECHECK_DAYS`, then only on Retry.
 - **Unsupported:** the official API cannot read the video, with the reason.
-- **Failed:** a temporary error; it is retried.
+- **Failed:** a temporary error, unresolved Instagram owner, or conflicting owner metadata. The reason distinguishes these cases. Owner failures need a valid posting username and Retry; they do not establish that the Reel is unsupported.
 - **Paused:** you stopped tracking it.
+
+**Finding a reel's owner:** a bare link (`instagram.com/reel/<code>/`) does not contain an owner. This integration has no supported arbitrary URL/shortcode-to-owner lookup. Business Discovery requires a target username; the app does not use Instagram oEmbed metadata for analytics, private endpoints, or scraping. See Meta's [Business Discovery reference](https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-user/business_discovery/) and [oEmbed limitations](https://developers.facebook.com/docs/instagram-platform/oembed/). Direct re-verification of these documentation pages on 21 October 2026 was blocked by Meta HTTP 429 responses; no API version, permissions, or token settings were changed as part of the owner-resolution fix.
+
+The resolution order is:
+1. a valid stored owner with previously retrieved metrics (the existing schema's evidence of verification);
+2. validated source metadata: a username-bearing Reel URL, `Username`/`Instagram Username`/`Owner Username`, a recognized profile-link column, or an explicit `@handle`/Instagram profile in `Creator Name`;
+3. the linked Video Performance Creator's Instagram username/profile URL;
+4. stored upload rows associated with the **exact** same Reel shortcode;
+5. bounded Business Discovery scans of known readable Instagram Professional accounts.
+
+Excel imports inspect cell values, hyperlink targets, and literal `HYPERLINK("URL", "label")` formulas without executing them. Display names are not treated as usernames. Shortcodes retain their case; usernames are normalized independently. Conflicting import sources are retained as invalid rows with diagnostics. Conflicts with a verified stored owner retain that owner and are logged/shown; conflicting unverified sources fail before making API calls. An explicit edit can correct unverified metadata; original upload values remain available with a superseded note.
+
+Discovery reuses media already read in the batch, follows supported `media.after(cursor)` pagination even when `paging.next` is absent, and stops once every requested shortcode is found. It uses up to `VIDEO_TRACKING_INSTAGRAM_SCAN_PAGES` pages per account (default 4, 50 items each), at most 30 additional accounts and 30 additional media requests per run, all within the shared Meta budget. Retries rotate candidate batches; this rotation is in memory and starts over after a backend restart. Rate-limited work remains in the existing persistent Meta queue.
+
+Only exhausted media lists are remembered as negative owner matches. Scans stopped by page/request limits or after finding other reels remain eligible on Retry. The corrected cache uses `vt_owner_search_v2`, ignoring legacy entries that may have recorded partial scans as complete. After restarting, a Retry can therefore recheck previously cached accounts within the same request budgets. Increase the configured scan window if the reel is older than the posts currently checked.
+
+Results distinguish an exhausted known-account scan from account/page/request limits or API errors. An unresolved owner is **Failed**, with the missing username/remediation in its reason. Authentication and permission errors retain their own reasons; rate limits remain **Pending**. A matching non-video post is **Unsupported**. A previously verified Reel missing after an exhausted owner scan is **Video Down**; a truncated scan is inconclusive. A successful HTTP bulk response confirms work was queued; consult each video's status and saved metrics to confirm retrieval. Missing API view counts remain **Partial**.
+
+A wrong unverified username (for example, a collab participant instead of the original poster) can be corrected only by an exact shortcode match. A Reel outside the known accounts or scan window still needs the posting Professional account's username, or a larger bounded `VIDEO_TRACKING_INSTAGRAM_SCAN_PAGES` window (maximum 10). Global owner discovery is not guaranteed. No database migration or new configuration is required.
+
+To recover upload `68f49e47ea214a6e962a33ef5b43ecb0`, restart the backend, open its videos from Tracking Library > Uploads, and supply each posting account's username for videos **193-202** using Edit, or re-upload the same links with a `Username` column. Ownerless eligible records are enriched and queued without duplicating videos or moving them out of the original upload. If metadata is already available through linked creators, Retry each affected video or select them and Refresh. Check for **Tracking** plus saved views, **Partial** when views are unavailable, or an actionable failure reason. Re-importing alone cannot resolve a bare Reel whose owner remains unknown.
+
+**Meta's hourly limit (large uploads):** Meta allows a limited number of calls per rolling hour for Instagram and Facebook together. Every Graph call, in both modules, first checks three things:
+- the app's own count of Meta calls in the last hour, against `META_HOURLY_CALL_BUDGET` (default 180);
+- Meta's own usage report from its response headers, against `META_USAGE_STOP_PERCENT` (default 80%);
+- whether Meta recently answered "rate limit reached".
+
+When a check fails, no call is sent. The video or creator becomes **Pending – waiting for Meta's hourly limit**, keeps any stored numbers, and continues automatically in the next hour, oldest first. This also works after a restart, because the call log and the queue are kept in the database.
+
+Other rules that apply here:
+- Each owner's posts are read once per run, 50 at a time; older pages are read only while a reel is still missing.
+- A rate-limited call is never retried immediately.
+- YouTube is not affected: videos are still fetched in batches of 50.
+- The Tracking Library and Upload & Analyze pages show how much is waiting and when it continues. Each upload shows "X of Y Instagram reels fetched, rest continue automatically after …".
 
 **Instagram limits:**
 - A reel can only be read through its owner's **Professional** account.
@@ -309,6 +408,8 @@ Sentiment details:
   - For the best speed, create the Neon project in **AWS Asia Pacific – Singapore**.
 
 ## 13. Troubleshooting
+
+If Apify uploads fail immediately with a database-preparation error, run `python -m alembic upgrade head` from `backend`, then restart and Retry the failed records. Migration `0007_apify_work_finished_at` repairs installations that had already applied an earlier `0006` without the work table's `finished_at` column. It is safe when that column already exists and preserves videos, remote run IDs and usage reservations. A `201 Created` upload response only confirms the file was accepted, not that an Actor ran. Database errors now log the exception type without logging SQL, parameters or credentials.
 
 | Symptom | Fix |
 | --- | --- |

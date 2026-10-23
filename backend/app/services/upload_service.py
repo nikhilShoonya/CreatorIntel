@@ -1,9 +1,8 @@
-"""Turns an ingested file into Upload / Creator / UploadItem records (with cache reuse)."""
+"""Turns an ingested file into Upload / Creator / UploadItem records (creators already known are reused)."""
 
 import logging
 import uuid
 from collections import Counter, defaultdict
-from datetime import timedelta
 from pathlib import Path
 
 from sqlalchemy import and_, func, or_, select
@@ -13,7 +12,6 @@ from app.agents.ingestion_agent import IngestionResult
 from app.config.settings import Settings
 from app.models.entities import Creator, CreatorStatus, Upload, UploadItem, UploadRow, UploadStatus
 from app.utils.logging import log_event
-from app.utils.time import as_utc, utcnow
 
 logger = logging.getLogger("creatorintel.uploads")
 
@@ -26,12 +24,16 @@ def store_upload_file(settings: Settings, safe_name: str, content: bytes) -> str
     return stored
 
 
-def _is_fresh(creator: Creator, ttl_hours: int) -> bool:
-    fetched = as_utc(creator.data_fetched_at)
-    # Only complete results are reused; Partial/Failed creators are fetched again on re-upload.
-    if ttl_hours <= 0 or fetched is None or creator.status != CreatorStatus.COMPLETED:
-        return False
-    return utcnow() - fetched < timedelta(hours=ttl_hours)
+def _reused_note(creator: Creator) -> str:
+    """Upload-row note for a creator that is already in the database (its stored data is reused as it is)."""
+    if creator.status in CreatorStatus.ACTIVE:
+        return "Already in the creator list and being analysed - not fetched again"
+    if creator.status == CreatorStatus.COMPLETED:
+        return "Already in the creator list - existing data reused (use Refresh Profile in its details to update)"
+    return (
+        f"Already in the creator list ({creator.status}) - existing data reused, not retried; "
+        "use Refresh Profile or Retry in its details"
+    )
 
 
 def duplicate_upload_rows(upload_id: str, ingestion: IngestionResult) -> list[UploadRow]:
@@ -92,11 +94,10 @@ def create_upload(db: Session, settings: Settings, filename: str, stored_filenam
     resolved: list[tuple[int, object, Creator, bool]] = []
     new_creators: list[Creator] = []
     cached = 0
-    ttl = settings.cache_ttl_hours
-    cached_note = f"Recent data reused (fetched in the last {ttl:g} hour{'' if ttl == 1 else 's'})"
     for position, row in enumerate(ingestion.rows, start=1):
         creator = existing.get(row.dedupe_key)
         from_cache = False
+        note: str | None = None
         if creator is None:
             creator = Creator(
                 channel_name=row.channel_name,
@@ -112,13 +113,12 @@ def create_upload(db: Session, settings: Settings, filename: str, stored_filenam
         elif row.error:
             creator.status = CreatorStatus.FAILED
             creator.error_message = row.error
-        elif _is_fresh(creator, settings.cache_ttl_hours):
+        else:
+            # Already known: reuse the stored data as it is, however old - no platform or AI calls on upload.
+            # Failed / partial creators are not retried here; they are refreshed from their details.
             from_cache = True
             cached += 1
-        elif creator.status not in CreatorStatus.ACTIVE:
-            creator.channel_name = row.channel_name or creator.channel_name
-            creator.status = CreatorStatus.PENDING
-            creator.error_message = None
+            note = _reused_note(creator)
         resolved.append((position, row, creator, from_cache))
         db.add(
             UploadRow(
@@ -127,7 +127,7 @@ def create_upload(db: Session, settings: Settings, filename: str, stored_filenam
                 channel_name=row.channel_name,
                 channel_link=row.channel_link,
                 outcome="invalid" if row.error else ("cached" if from_cache else "queued"),
-                message=row.error or (cached_note if from_cache else None),
+                message=row.error or note,
             )
         )
     db.add_all(duplicate_upload_rows(upload.id, ingestion))

@@ -17,6 +17,7 @@ import httpx
 
 from app.config.settings import Settings, get_settings
 from app.schemas.platform import ChannelProfile, CollectionError, ContentItem
+from app.services import meta_budget
 from app.services.api_usage import record_instagram_call, record_meta_usage
 from app.services.http_client import HttpRequestError, request_json
 from app.utils.logging import log_event
@@ -26,6 +27,7 @@ from app.utils.url_parser import ParsedLink
 logger = logging.getLogger("creatorintel.instagram")
 
 GRAPH_BASE = "https://graph.facebook.com"
+META_WAIT = "Pending - waiting for Meta's hourly limit"
 _RATE_LIMIT_CODES = {4, 17, 32, 613, 80001, 80002}
 _PERMISSION_CODES = {10, 200, 3}
 _NOT_PROFESSIONAL_SUBCODE = 2207013
@@ -89,17 +91,33 @@ class InstagramCollector:
 
     async def _graph_get(self, path: str, params: dict[str, Any]) -> dict:
         url = f"{GRAPH_BASE}/{self.settings.meta_api_version}/{path.lstrip('/')}"
-        return await request_json(
-            "GET", url,
-            service="Instagram Graph API",
-            params={**params, **self._auth_params()},
-            headers={"Authorization": f"Bearer {self.settings.meta_access_token}"},
-            # Rate-limit answers are not retried: Meta's limits run per hour, so an immediate retry never
-            # succeeds and only uses up more of the allowance.
-            client=self.client,
-            on_attempt=record_instagram_call,
-            on_response=record_meta_usage,
-        )
+
+        def attempt() -> None:  # every attempt is reserved in the shared Meta budget first
+            meta_budget.take()
+            record_instagram_call()
+
+        try:
+            return await request_json(
+                "GET", url,
+                service="Instagram Graph API",
+                params={**params, **self._auth_params()},
+                headers={"Authorization": f"Bearer {self.settings.meta_access_token}"},
+                # Rate-limit answers are not retried: Meta's limits run per hour, so an immediate retry never
+                # succeeds and only uses up more of the allowance.
+                client=self.client,
+                on_attempt=attempt,
+                on_response=record_meta_usage,
+            )
+        except meta_budget.MetaBudgetExhausted as exc:  # nothing was sent: the creator waits in the Meta queue
+            when = datetime.fromtimestamp(exc.resume_at).astimezone()
+            raise CollectionError(
+                CollectionError.RATE_LIMITED, f"{META_WAIT} ({exc.reason}; continues after {when:%H:%M})",
+                account_access="api_error",
+            ) from exc
+        except HttpRequestError as exc:
+            if _graph_error(exc.payload).get("code") in _RATE_LIMIT_CODES or exc.status_code == 429:
+                meta_budget.note_rate_limited()
+            raise
 
     def _translate_error(self, exc: HttpRequestError) -> CollectionError:
         error = _graph_error(exc.payload)

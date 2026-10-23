@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     # Video Performance: view counts are read this many times per check and the highest is kept (YouTube's
     # servers can return an older copy of a count). Each extra read costs 1 unit per 50 videos.
     youtube_view_reads: int = Field(default=3, ge=1, le=5)
+    # Meta (Instagram + Facebook Graph API) calls allowed per rolling hour, and the share of Meta's reported
+    # hourly usage at which the app stops calling. Work that does not fit waits and continues automatically.
+    meta_hourly_call_budget: int = Field(default=180, ge=1)
+    meta_usage_stop_percent: float = Field(default=80.0, gt=0, le=100)
 
     meta_app_id: str = ""
     meta_app_secret: str = ""
@@ -36,6 +40,29 @@ class Settings(BaseSettings):
     # Facebook Page whose videos/reels Video Performance can track. META_ACCESS_TOKEN must be a System User
     # token with this Page assigned; the Page access token is derived from it at runtime (never stored).
     meta_facebook_page_id: str = ""
+
+    # Video Performance direct Reels only. A missing token keeps the existing Meta route active.
+    apify_api_token: str = Field(default="", repr=False)
+    apify_instagram_reel_actor_id: str = "apify/instagram-reel-scraper"
+    apify_instagram_reel_enabled: bool = False
+    apify_include_shares: bool = False
+    apify_instagram_reel_batch_size: int = Field(default=25, ge=1, le=100)
+    apify_instagram_reel_monthly_result_limit: int = Field(default=1500, ge=0, le=1_000_000)
+    # Spending ceiling per Reel for one Actor run (Apify charges per Reel event; the run's cap never goes below
+    # Apify's minimum). A ceiling, not the price: the run is billed only for Reels actually returned.
+    apify_max_charge_per_reel_usd: float = Field(default=0.005, gt=0, le=1)
+
+    @field_validator("apify_instagram_reel_actor_id")
+    @classmethod
+    def _apify_actor(cls, value: str) -> str:
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)?", value):
+            raise ValueError("Apify Actor must be an Actor ID or owner/name")
+        return value
+
+    @property
+    def apify_reels_configured(self) -> bool:
+        return self.apify_instagram_reel_enabled and bool(self.apify_api_token.strip())
 
     # Groq (OpenAI-compatible Chat Completions API). The default model supports
     # strict JSON-schema structured output.
@@ -92,6 +119,9 @@ class Settings(BaseSettings):
     video_tracking_timezone: str = "Asia/Kolkata"
     # Video Down videos are re-checked daily for this many days after they were last seen, then only on Retry (0 = always).
     video_tracking_down_recheck_days: int = Field(default=14, ge=0)
+    # Automatic daily metrics refresh of every tracked video - off: numbers are refreshed on demand only
+    # (a video's Refresh, or "Run now" on the dashboard). true = run it daily at VIDEO_TRACKING_REFRESH_TIME.
+    video_tracking_auto_refresh: bool = False
     video_tracking_refresh_time: str = "06:30"  # daily metric refresh (HH:MM, local to the timezone above)
     video_tracking_discovery_time: str = "06:00"  # daily new-video discovery for tracked creators
     video_tracking_max_days: int = Field(default=0, ge=0)  # stop tracking a video after N days (0 = never)

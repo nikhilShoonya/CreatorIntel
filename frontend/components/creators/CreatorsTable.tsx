@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown, Filter, Inbox, Loader2, Plus, Search, Trash2, X } from "lucide-react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Filter, Inbox, Loader2, Plus, Search, Trash2, Upload, X } from "lucide-react";
 
 import { StatusBadge, SentimentBadge } from "@/components/ui/Badges";
 import { Button, Card, EmptyState, ErrorBanner, Select } from "@/components/ui/controls";
@@ -15,6 +15,7 @@ import { formatChecked } from "../video-performance/format";
 import { ChannelLinkCell, EngagementCell, GenreCell, NA_CELL, PlatformCell, TopVideoCell } from "./cells";
 import { CreatorDetailsPanel } from "./CreatorDetailsPanel";
 import { CreatorFormDialog } from "./CreatorFormDialog";
+import { CreatorUploadDialog } from "./CreatorUploadDialog";
 import { ExportMenu } from "./ExportMenu";
 import { Pagination } from "./Pagination";
 import { RowActions, type CreatorActions } from "./RowActions";
@@ -65,6 +66,8 @@ export function CreatorsTable({
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [formTarget, setFormTarget] = useState<Creator | "new" | null>(null);
   const [deleteTargets, setDeleteTargets] = useState<Creator[] | null>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const refreshAfterUpload = useCallback(() => setLocalRefresh((n) => n + 1), []);
   const toastTimer = useRef<number | undefined>(undefined);
 
   const debouncedSearch = useDebounce(search.trim(), 300);
@@ -215,6 +218,12 @@ export function CreatorsTable({
               <span className="rounded-full bg-accent px-1.5 text-[11px] font-semibold leading-5 text-white">{activeFilterCount}</span>
             )}
           </Button>
+          {!uploadId && (
+            <Button onClick={() => setUploadOpen(true)}>
+              <Upload size={16} />
+              Upload Creators
+            </Button>
+          )}
           <Button variant="primary" onClick={() => setFormTarget("new")}>
             <Plus size={16} />
             Add creator
@@ -271,7 +280,20 @@ export function CreatorsTable({
         hasQuery ? (
           <EmptyState icon={<Search size={22} />} title="No creators match your filters" description="Try a different search term or clear the filters." action={<Button onClick={clearFilters}>Clear filters</Button>} />
         ) : (
-          (emptyState ?? <EmptyState icon={<Inbox size={22} />} title="No creators yet" description="Upload an Excel or CSV file to start analysing creators." />)
+          (emptyState ?? (
+            <EmptyState
+              icon={<Inbox size={22} />}
+              title="No creators yet"
+              description="Upload an Excel or CSV file to start analysing creators."
+              action={
+                !uploadId && (
+                  <Button variant="primary" onClick={() => setUploadOpen(true)}>
+                    <Upload size={16} /> Upload Creators
+                  </Button>
+                )
+              }
+            />
+          ))
         )
       ) : (
         <div className="table-scroll max-h-[70vh] overflow-auto border-t border-line">
@@ -335,16 +357,21 @@ export function CreatorsTable({
         />
       )}
 
+      <CreatorUploadDialog open={uploadOpen} onClose={() => setUploadOpen(false)} onUploaded={refreshAfterUpload} />
+
       <CreatorDetailsPanel
         creatorId={selectedId}
         onClose={() => setSelectedId(null)}
         onAction={async (kind, id) => {
           try {
-            const result = kind === "retry" ? await api.retry(id) : await api.reanalyze(id);
+            const result =
+              kind === "retry" ? await api.retry(id) : kind === "refresh_profile" ? await api.refreshProfile(id) : await api.reanalyze(id);
             showToast({ tone: "success", message: result.message });
             setLocalRefresh((n) => n + 1);
+            return true;
           } catch (err) {
             showToast({ tone: "error", message: err instanceof Error ? err.message : "Action failed" });
+            return false;
           }
         }}
         onEdit={(creator) => {

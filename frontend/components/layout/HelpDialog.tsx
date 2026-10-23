@@ -49,8 +49,9 @@ const ANALYTICS = [
     title: "Upload your creator list",
     body: (
       <>
-        Go to <b>Upload &amp; Analyze</b> and choose an Excel or CSV file with two columns: <b>Channel Name</b> and{" "}
-        <b>Channel Link</b> (YouTube or Instagram profile links).
+        Open <b>Creator Analytics → Creator List</b>, click <b>Upload Creators</b> and drop (or browse for) an Excel or CSV
+        file with two columns: <b>Channel Name</b> and <b>Channel Link</b> (YouTube or Instagram profile links). Past uploads
+        of both modules are under <b>History</b>.
       </>
     ),
   },

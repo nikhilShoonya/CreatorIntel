@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.db import Base
@@ -109,6 +109,7 @@ class VtVideo(Base):
     video_url: Mapped[str] = mapped_column(String(2048))
     creator_name: Mapped[str | None] = mapped_column(String(300), index=True)
     owner_username: Mapped[str | None] = mapped_column(String(100))  # Instagram owner (needed by the official API)
+    instagram_media_kind: Mapped[str | None] = mapped_column(String(10))
     channel_id: Mapped[str | None] = mapped_column(String(100))  # YouTube channel ID
     creator_id: Mapped[int | None] = mapped_column(
         ForeignKey("video_tracking_creators.id", ondelete="SET NULL"), index=True
@@ -128,6 +129,9 @@ class VtVideo(Base):
     comments: Mapped[int | None] = mapped_column(BigInteger)
     engagement_rate: Mapped[float | None] = mapped_column(Float)
     engagement_basis: Mapped[str | None] = mapped_column(String(20))  # "views" when calculable
+    metrics_source: Mapped[str | None] = mapped_column(String(40))
+    view_metric: Mapped[str | None] = mapped_column(String(40))
+    source_metrics: Mapped[dict | None] = mapped_column(JSON)
 
     sentiment: Mapped[str | None] = mapped_column(String(20), index=True)
     sentiment_confidence: Mapped[float | None] = mapped_column(Float)
@@ -145,7 +149,8 @@ class VtVideo(Base):
 
 class VtViewSnapshot(Base):
     __tablename__ = "video_tracking_view_history"
-    __table_args__ = (Index("ix_vt_history_video_time", "video_id", "captured_at"),)
+    __table_args__ = (Index("ix_vt_history_video_time", "video_id", "captured_at"),
+                      UniqueConstraint("video_id", "source_run_id", name="uq_vt_history_source_run"))
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     video_id: Mapped[int] = mapped_column(ForeignKey("video_tracking_videos.id", ondelete="CASCADE"))
@@ -154,6 +159,10 @@ class VtViewSnapshot(Base):
     likes: Mapped[int | None] = mapped_column(BigInteger)
     comments: Mapped[int | None] = mapped_column(BigInteger)
     engagement_rate: Mapped[float | None] = mapped_column(Float)
+    metrics_source: Mapped[str | None] = mapped_column(String(40))
+    view_metric: Mapped[str | None] = mapped_column(String(40))
+    source_metrics: Mapped[dict | None] = mapped_column(JSON)
+    source_run_id: Mapped[str | None] = mapped_column(String(32))
 
     video: Mapped[VtVideo] = relationship(back_populates="history")
 
@@ -193,4 +202,34 @@ class VtJobLock(Base):
     job_type: Mapped[str] = mapped_column(String(40), primary_key=True)
     owner: Mapped[str | None] = mapped_column(String(64))
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class VtApifyRun(Base):
+    """Durable provider-job ledger, not a second set of tracked videos."""
+
+    __tablename__ = "video_tracking_apify_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    remote_run_id: Mapped[str | None] = mapped_column(String(100), unique=True)
+    actor_id: Mapped[str] = mapped_column(String(200))
+    month: Mapped[str] = mapped_column(String(7), index=True)  # UTC submission month
+    inputs: Mapped[list] = mapped_column(JSON)  # exact video ID + shortcode associations
+    budget_units: Mapped[int] = mapped_column(Integer)
+    returned_items: Mapped[int | None] = mapped_column(Integer)
+    charged_events: Mapped[dict | None] = mapped_column(JSON)
+    reported_cost_usd: Mapped[float | None] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    message: Mapped[str | None] = mapped_column(Text)
+
+
+class VtApifyWork(Base):
+    """Latest provider job per video, retained to coalesce overlapping requests even after completion."""
+
+    __tablename__ = "video_tracking_apify_work"
+
+    video_id: Mapped[int] = mapped_column(ForeignKey("video_tracking_videos.id", ondelete="CASCADE"), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("video_tracking_apify_runs.id", ondelete="CASCADE"), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

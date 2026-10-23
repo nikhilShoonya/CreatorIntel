@@ -108,15 +108,15 @@ def test_header_row_below_title_rows():
     assert vp.rows[0].parsed.identifier == "aaaaaaaaaaa" and vp.rows[0].row == 4
 
 
-def test_partial_results_are_not_reused_from_cache():
-    from datetime import datetime, timezone
-
+def test_existing_creators_are_reused_whatever_their_state():
+    """Re-uploading a known creator never fetches it again - partial / failed ones are refreshed from their details."""
     from app.models.entities import Creator, CreatorStatus
-    from app.services.upload_service import _is_fresh
+    from app.services.upload_service import _reused_note
 
-    now = datetime.now(timezone.utc)
-    assert _is_fresh(Creator(status=CreatorStatus.COMPLETED, data_fetched_at=now), 24) is True
-    assert _is_fresh(Creator(status=CreatorStatus.PARTIAL, data_fetched_at=now), 24) is False
+    assert "existing data reused" in _reused_note(Creator(status=CreatorStatus.COMPLETED))
+    assert "(Partial) - existing data reused, not retried" in _reused_note(Creator(status=CreatorStatus.PARTIAL))
+    assert "(Failed) - existing data reused, not retried" in _reused_note(Creator(status=CreatorStatus.FAILED))
+    assert "being analysed" in _reused_note(Creator(status=CreatorStatus.PROCESSING))
 
 
 def test_youtube_average_split_long_and_short_form():

@@ -2,20 +2,23 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, FileText, History, Loader2, Trash2 } from "lucide-react";
+import { ArrowRight, Clapperboard, FileText, History, Loader2, Search, Trash2, Users } from "lucide-react";
 
 import { Card, EmptyState, ErrorBanner } from "@/components/ui/controls";
 import { ConfirmDialog } from "@/components/ui/Dialog";
 import { FileRowsDialog, OutcomePill } from "@/components/ui/FileRowsDialog";
+import { UploadVideosDialog } from "@/components/video-performance/dialogs";
+import { UploadsPanel } from "@/components/video-performance/UploadsPanel";
 import { useApi } from "@/hooks/useApi";
 import { useUploads } from "@/hooks/useData";
+import { useStoredValue } from "@/hooks/useStoredValue";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import type { UploadRow, UploadSummary } from "@/types";
 
 const OUTCOMES: Record<UploadRow["outcome"], { label: string; tone: "green" | "gray" | "amber" | "red" }> = {
   queued: { label: "Analysed", tone: "green" },
-  cached: { label: "Reused recent data", tone: "gray" },
+  cached: { label: "Existing data reused", tone: "gray" },
   duplicate: { label: "Duplicate", tone: "amber" },
   invalid: { label: "Invalid link", tone: "red" },
 };
@@ -67,8 +70,109 @@ function UploadStatusPill({ upload }: { upload: UploadSummary }) {
   );
 }
 
+type HistoryTab = "creators" | "videos";
+const TAB_KEY = "creatorintel:history-tab";
+
 export default function HistoryPage() {
-  const { data, error, reload } = useUploads();
+  const [storedTab, setTab] = useStoredValue(TAB_KEY, "creators");
+  const tab: HistoryTab = storedTab === "videos" ? "videos" : "creators";
+  const [query, setQuery] = useState("");
+
+  return (
+    <div className="mx-auto max-w-[1600px] space-y-5">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-ink">Upload History</h1>
+          <p className="text-sm text-muted">Every file uploaded to Creator Analytics and Video Tracking, with its saved rows.</p>
+        </div>
+        <label className="relative w-full sm:w-72">
+          <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search by file name…"
+            aria-label="Search uploads by file name"
+            maxLength={200}
+            className="h-10 w-full rounded-lg border border-line bg-white pl-9 pr-3 text-sm outline-none placeholder:text-slate-400 focus:border-accent focus:ring-2 focus:ring-indigo-100"
+          />
+        </label>
+      </div>
+
+      <div className="inline-flex rounded-lg border border-line bg-white p-1" role="tablist" aria-label="History source">
+        {(
+          [
+            { id: "creators", label: "Creator Analytics History", Icon: Users },
+            { id: "videos", label: "Video Tracking History", Icon: Clapperboard },
+          ] as const
+        ).map(({ id, label, Icon }) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            id={`history-tab-${id}`}
+            aria-selected={tab === id}
+            aria-controls={`history-panel-${id}`}
+            onClick={() => setTab(id)}
+            className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+              tab === id ? "bg-accent-soft text-accent" : "text-slate-600 hover:text-ink"
+            }`}
+          >
+            <Icon size={15} aria-hidden="true" />
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div role="tabpanel" id={`history-panel-${tab}`} aria-labelledby={`history-tab-${tab}`}>
+        {tab === "creators" ? <CreatorHistory query={query} /> : <VideoHistory query={query} />}
+      </div>
+    </div>
+  );
+}
+
+/** Video Performance uploads (same data and actions as Tracking Library > Uploads). */
+function VideoHistory({ query }: { query: string }) {
+  const [token, setToken] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const [toast, setToast] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+
+  function showToast(tone: "success" | "error", message: string) {
+    setToast({ tone, message });
+    window.setTimeout(() => setToast(null), 4000);
+  }
+
+  return (
+    <div className="space-y-3">
+      {toast && (
+        <div
+          role="status"
+          className={`rounded-lg border px-4 py-3 text-sm ${
+            toast.tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-rose-200 bg-rose-50 text-rose-700"
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
+      <Card className="overflow-hidden">
+        <UploadsPanel
+          refreshToken={token}
+          onToast={showToast}
+          onChanged={() => setToken((n) => n + 1)}
+          onUpload={() => setUploading(true)}
+          query={query}
+        />
+      </Card>
+      <UploadVideosDialog open={uploading} onClose={() => setUploading(false)} onDone={() => setToken((n) => n + 1)} />
+    </div>
+  );
+}
+
+/** Creator Analytics uploads. */
+function CreatorHistory({ query }: { query: string }) {
+  const { data: allUploads, error, reload } = useUploads();
+  const term = query.trim().toLowerCase();
+  const data = allUploads && term ? allUploads.filter((u) => u.filename.toLowerCase().includes(term)) : allUploads;
   const [toDelete, setToDelete] = useState<UploadSummary | null>(null);
   const [alsoCreators, setAlsoCreators] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -83,11 +187,7 @@ export default function HistoryPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[1600px] space-y-5">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-ink">Upload History</h1>
-        <p className="text-sm text-muted">Previously processed files. Open one to see its creators.</p>
-      </div>
+    <div className="space-y-3">
       {error && <ErrorBanner message={error} onRetry={reload} />}
       {notice && (
         <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -95,8 +195,19 @@ export default function HistoryPage() {
         </div>
       )}
       <Card className="overflow-hidden">
-        {data && data.length === 0 ? (
-          <EmptyState icon={<History size={22} />} title="No uploads yet" description="Files you upload on the Upload & Analyze page will be listed here." />
+        {allUploads && allUploads.length === 0 ? (
+          <EmptyState
+            icon={<History size={22} />}
+            title="No creator uploads yet"
+            description="Creator spreadsheets uploaded with Creator List > Upload Creators are listed here."
+            action={
+              <Link href="/creators" className="inline-flex h-9 items-center gap-2 rounded-lg bg-accent px-4 text-sm font-medium text-white hover:bg-accent-strong">
+                Open Creator List <ArrowRight size={15} />
+              </Link>
+            }
+          />
+        ) : data && data.length === 0 ? (
+          <EmptyState icon={<Search size={22} />} title="No matching uploads" description={`No creator file name contains "${query.trim()}".`} />
         ) : (
           <div className="table-scroll overflow-x-auto">
             <table className="w-full min-w-[900px] text-sm">

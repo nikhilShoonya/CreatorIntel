@@ -165,6 +165,19 @@ async def retry_creator(
     return ActionResponse(creator_id=creator_id, status=CreatorStatus.PENDING, message="Creator queued for refresh")
 
 
+@router.post("/{creator_id}/refresh-profile", response_model=ActionResponse, status_code=202)
+async def refresh_creator_profile(
+    creator_id: int,
+    db: Session = Depends(get_db),
+    orchestrator: EnrichmentOrchestrator = Depends(get_orchestrator),
+):
+    """Re-fetch this creator's platform data only (YouTube / Instagram). The stored AI analysis is kept;
+    use Re-analyze to run the AI again."""
+    await run_in_threadpool(_queue_creator, db, creator_id, False)
+    orchestrator.start_profile_refresh(creator_id)
+    return ActionResponse(creator_id=creator_id, status=CreatorStatus.PENDING, message="Refreshing profile data")
+
+
 @router.post("/{creator_id}/reanalyze", response_model=ActionResponse, status_code=202)
 async def reanalyze_creator(
     creator_id: int,

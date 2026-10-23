@@ -11,3 +11,4 @@ python-multipart
 psycopg[binary]
 tzdata
 alembic
+apify-client>=2.2,<3

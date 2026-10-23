@@ -156,7 +156,7 @@ def test_full_video_tracking_flow(api):
     assert yt["engagement_rate"] == pytest.approx((100 + 10) / 2000 * 100, abs=0.01)
     assert yt["sentiment"] == "Positive"
     assert ig["status"] == "Tracking" and ig["current_views"] == 1000 and ig["engagement_rate"] == 10.0
-    assert unknown["status"] == "Unsupported" and "username" in unknown["status_reason"]
+    assert unknown["status"] == "Failed" and "owner unresolved" in unknown["status_reason"]
 
     # The import-ready exports have the same four columns in both formats.
     csv_export = api.get("/api/video-performance/exports/csv", params={"layout": "upload"})
@@ -252,8 +252,8 @@ def test_full_video_tracking_flow(api):
     assert fixed.status_code == 200
     fixed_video = wait_idle(api)["Cnoowner1"]
     # never found on that account -> not "Video Down": the username (or a collab post) is the likely cause
-    assert fixed_video["status"] == "Unsupported"
-    assert fixed_video["status_reason"].startswith("Reel not found on @tradingtech31's posts - check the Instagram username")
+    assert fixed_video["status"] == "Failed" and "owner unresolved" in fixed_video["status_reason"]
+    assert "no exact match" in fixed_video["status_reason"] and "username" in fixed_video["status_reason"]
 
     renamed = api.put(f"/api/video-performance/videos/{ig['id']}", json={"creator_name": "Trading Tech Official"})
     assert renamed.json()["creator_name"] == "Trading Tech Official"

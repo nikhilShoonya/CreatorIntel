@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { FilePlus, FileSpreadsheet, ListVideo, Upload } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/controls";
+import { MetaQueueBanner } from "@/components/ui/MetaQueueBanner";
 import { UploadsPanel } from "@/components/video-performance/UploadsPanel";
 import { AddVideoDialog, UploadVideosDialog } from "@/components/video-performance/dialogs";
 import { sortFromParam, statusFromParam, VideoTable } from "@/components/video-performance/VideoTable";
@@ -41,13 +42,15 @@ export default function TrackingLibraryPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => setDialog("upload")}>
-            <Upload size={16} /> Upload Excel
+            <Upload size={16} /> Upload Videos
           </Button>
           <Button variant="primary" onClick={() => setDialog("video")}>
             <FilePlus size={16} /> Add video
           </Button>
         </div>
       </div>
+
+      <MetaQueueBanner scope="videos" />
 
       <Card className="overflow-hidden">
         <div className="flex gap-1 px-5 pt-4" role="tablist">

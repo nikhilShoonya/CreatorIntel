@@ -157,26 +157,6 @@ def test_export_rejects_unknown_status(api):
 
 
 # ------------------------------------------------------------------ uploads
-def test_cached_row_note_uses_the_configured_ttl(api, monkeypatch):
-    from app.services import upload_service
-
-    captured: list[str | None] = []
-    original = upload_service.UploadRow
-
-    def capture(**kwargs):
-        captured.append(kwargs.get("message"))
-        return original(**kwargs)
-
-    monkeypatch.setattr(upload_service, "_is_fresh", lambda creator, ttl: True)
-    monkeypatch.setattr(upload_service, "UploadRow", capture)
-    csv = b"Channel Name,Channel Link\nNitin,https://www.youtube.com/@nitinnitro\n"
-    api.post("/api/uploads", files={"file": ("ttl.csv", csv, "text/csv")})  # makes sure the creator exists
-    settings = get_settings()
-    monkeypatch.setattr(settings, "cache_ttl_hours", 6)
-    api.post("/api/uploads", files={"file": ("ttl2.csv", csv, "text/csv")})
-    assert "Recent data reused (fetched in the last 6 hours)" in captured
-
-
 def test_upload_file_is_kept_when_the_delete_is_not_committed(api, monkeypatch):
     from app.api import uploads as uploads_api
 

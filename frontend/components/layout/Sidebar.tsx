@@ -13,7 +13,6 @@ import {
   LifeBuoy,
   Settings,
   Table2,
-  Upload,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -22,7 +21,7 @@ import { HelpDialog } from "./HelpDialog";
 
 type NavItem = { href: string; label: string; Icon: LucideIcon };
 
-const UPLOAD: NavItem = { href: "/", label: "Upload & Analyze", Icon: Upload };
+// (creator uploads are on the Creator List - "Upload Creators")
 const HISTORY: NavItem = { href: "/history", label: "History", Icon: History };
 const SETTINGS: NavItem = { href: "/settings", label: "Settings", Icon: Settings };
 
@@ -94,7 +93,7 @@ export function Sidebar() {
   const [helpOpen, setHelpOpen] = useState(false);
   return (
     <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-line bg-white lg:flex">
-      <Link href="/" className="flex items-center gap-3 px-6 pb-6 pt-6">
+      <Link href="/creator-analytics" className="flex items-center gap-3 px-6 pb-6 pt-6">
         <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent text-white">
           <ChartNoAxesColumnIncreasing size={20} strokeWidth={2.5} aria-hidden="true" />
         </span>
@@ -105,7 +104,6 @@ export function Sidebar() {
       </Link>
 
       <nav className="flex-1 space-y-1 overflow-y-auto px-3" aria-label="Main">
-        <NavLink item={UPLOAD} pathname={pathname} />
         <NavGroup label="Creator Analytics" Icon={Users} items={CREATOR_ANALYTICS} pathname={pathname} />
         <NavGroup label="Video Performance" Icon={Clapperboard} items={VIDEO_PERFORMANCE} pathname={pathname} />
         <NavLink item={HISTORY} pathname={pathname} />
@@ -133,7 +131,6 @@ export function Sidebar() {
 export function MobileNav() {
   const pathname = usePathname();
   const items: NavItem[] = [
-    UPLOAD,
     ...CREATOR_ANALYTICS.map((item) => (item.label === "Dashboard" ? { ...item, label: "Creator Dashboard" } : item)),
     ...VIDEO_PERFORMANCE.map((item) => ({ ...item, label: `Video ${item.label}` })),
     HISTORY,

@@ -1,10 +1,11 @@
 "use client";
 
-import { useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ExternalLink, FileSpreadsheet, Info, Loader2, Upload } from "lucide-react";
+import { useState, type FormEvent, type ReactNode } from "react";
+import { AlertTriangle, CheckCircle2, ExternalLink, Info, Loader2, Upload } from "lucide-react";
 
 import { Button } from "@/components/ui/controls";
 import { Dialog } from "@/components/ui/Dialog";
+import { FileDropzone } from "@/components/ui/FileDropzone";
 import { PlatformIcon } from "@/components/ui/PlatformIcon";
 import { useApi } from "@/hooks/useApi";
 import { formatCompact, formatDateTime, formatNumber, formatPercent, safeHref } from "@/lib/format";
@@ -64,7 +65,7 @@ function useSubmit() {
 // ------------------------------------------------------------- add video
 export function AddVideoDialog({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: (m: string) => void }) {
   return (
-    <Dialog open={open} title="Add video" description="Track a single YouTube video, Instagram reel, or a video/reel on your Facebook Page. Views are checked daily." onClose={onClose}>
+    <Dialog open={open} title="Add video" description="Track a YouTube video, Instagram reel, or a video/reel on your Facebook Page. Refresh on demand; daily refresh is optional." onClose={onClose}>
       {open && <AddVideoForm onClose={onClose} onSaved={onSaved} />}
     </Dialog>
   );
@@ -108,13 +109,13 @@ function AddVideoForm({ onClose, onSaved }: { onClose: () => void; onSaved: (m: 
 function InstagramUsernameField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <div>
-      <Field label="Instagram username of the reel owner">
+      <Field label="Instagram username (optional with Apify Reels)">
         <input className={input} value={value} onChange={(e) => onChange(e.target.value)} placeholder="@username" maxLength={100} />
       </Field>
       <p className="mt-1.5 flex gap-1.5 text-xs text-muted">
         <Info size={13} className="mt-px shrink-0" />
-        The official Instagram API finds a reel through its owner&apos;s Professional account, so the username is required
-        unless the link already contains it (instagram.com/username/reel/…).
+        Direct Reel links need no username when Apify is configured. Meta-based tracking uses the posting
+        Professional account&apos;s username when the owner cannot be resolved automatically.
       </p>
     </div>
   );
@@ -195,7 +196,6 @@ const ROW_LABEL: Record<string, string> = {
 };
 
 function UploadForm({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
-  const fileRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<VpUploadResult | null>(null);
   const { busy, error, run } = useSubmit();
@@ -212,9 +212,27 @@ function UploadForm({ onClose, onDone }: { onClose: () => void; onDone: () => vo
   if (result) {
     const { upload } = result;
     const notAdded = result.rows.filter((r) => r.status !== "added" || r.message);
+    const tone = upload.added + upload.already_tracked === 0 ? "failure" : upload.invalid > 0 ? "partial" : "success";
     return (
       <div className="space-y-4 pb-2">
-        <div className="grid grid-cols-4 divide-x divide-line rounded-lg border border-line text-center">
+        <p
+          role="status"
+          className={`flex items-center gap-2 rounded-lg border px-4 py-3 text-sm font-medium ${
+            tone === "success"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+              : tone === "partial"
+                ? "border-amber-200 bg-amber-50 text-amber-800"
+                : "border-rose-200 bg-rose-50 text-rose-700"
+          }`}
+        >
+          {tone === "success" ? <CheckCircle2 size={17} /> : <AlertTriangle size={17} />}
+          {tone === "success"
+            ? `${upload.filename} uploaded`
+            : tone === "partial"
+              ? `${upload.filename} uploaded - ${upload.invalid} row${upload.invalid === 1 ? "" : "s"} could not be used`
+              : "No video in this file could be tracked"}
+        </p>
+        <div className="grid grid-cols-2 divide-line rounded-lg border border-line text-center sm:grid-cols-4 sm:divide-x">
           {[
             ["Added", upload.added, "text-emerald-700"],
             ["Already tracked", upload.already_tracked, "text-slate-700"],
@@ -251,7 +269,10 @@ function UploadForm({ onClose, onDone }: { onClose: () => void; onDone: () => vo
             </table>
           </div>
         )}
-        <p className="text-xs text-muted">Added videos are being fetched now and will then be checked every day.</p>
+        <p className="text-xs text-muted">
+          New videos and existing videos recovered with missing Instagram owner metadata are queued for fetching.
+          Check the tracking table for retrieval results. Other already-tracked videos keep their stored data.
+        </p>
         <div className="flex justify-end">
           <Button variant="primary" onClick={onClose}>
             Done
@@ -263,21 +284,20 @@ function UploadForm({ onClose, onDone }: { onClose: () => void; onDone: () => vo
 
   return (
     <form onSubmit={submit} className="space-y-4">
-      <button
-        type="button"
-        onClick={() => fileRef.current?.click()}
-        className="flex w-full flex-col items-center gap-2 rounded-lg border border-dashed border-slate-300 px-4 py-8 text-sm text-slate-600 hover:border-accent hover:bg-accent-soft/40"
-      >
-        <FileSpreadsheet size={28} className="text-emerald-600" />
-        {file ? <span className="font-medium text-ink">{file.name}</span> : <span>Choose a .xlsx, .xls or .csv file (max 10 MB)</span>}
-      </button>
-      <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-      <p className="text-xs text-muted">
-        Columns: <strong>Video Link</strong> (required), Creator Name, Platform (optional - detected from the link), and for
-        Instagram reels a <strong>Username</strong> column with the reel owner&apos;s handle. Facebook share links
-        (facebook.com/share/… and fb.watch/…) are converted to the real video link automatically; metrics are only available
-        for videos on your own Facebook Page. Duplicate videos are skipped.
-      </p>
+      <FileDropzone
+        file={file}
+        onChange={setFile}
+        disabled={busy}
+        hint={
+          <>
+            Columns: <strong>Video Link</strong> (required), Creator Name, Platform (optional - detected from the link), and for
+            an optional <strong>Username</strong> column for Meta tracking. With Apify enabled, direct Instagram Reel links need no username.
+            For a bare shortcode, set Platform to Instagram or use an Instagram Reel URL header. Facebook share links
+            (facebook.com/share/… and fb.watch/…) are converted to the real video link automatically; metrics are only
+            available for videos on your own Facebook Page. Duplicate and already-tracked videos are not fetched again.
+          </>
+        }
+      />
       <ErrorText error={error} />
       <div className="flex justify-end gap-2 pb-2">
         <Button onClick={onClose} disabled={busy}>
@@ -285,7 +305,7 @@ function UploadForm({ onClose, onDone }: { onClose: () => void; onDone: () => vo
         </Button>
         <Button type="submit" variant="primary" disabled={busy || !file}>
           {busy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
-          Upload
+          {busy ? "Uploading & checking links…" : "Upload"}
         </Button>
       </div>
     </form>

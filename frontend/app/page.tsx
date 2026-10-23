@@ -5,6 +5,7 @@ import { FileSpreadsheet } from "lucide-react";
 
 import { CreatorsTable } from "@/components/creators/CreatorsTable";
 import { EmptyState } from "@/components/ui/controls";
+import { MetaQueueBanner } from "@/components/ui/MetaQueueBanner";
 import { ProcessingList } from "@/components/upload/ProcessingList";
 import { UploadCard, validateClientFile } from "@/components/upload/UploadCard";
 import { UploadStatusCard } from "@/components/upload/UploadStatusCard";
@@ -79,6 +80,7 @@ export default function UploadAnalyzePage() {
       </div>
 
       {processing && upload && <ProcessingList upload={upload} />}
+      <MetaQueueBanner scope="creators" />
 
       {lastUploadId ? (
         <CreatorsTable

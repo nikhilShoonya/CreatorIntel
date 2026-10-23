@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from app.config.settings import Settings, get_settings
 from app.models.db import ReadSessionLocal, session_scope
 from app.models.usage import ApiRateStatus, ApiUsage
+from app.services import meta_budget
 from app.utils.logging import log_event
 from app.utils.time import as_utc, utcnow
 
@@ -102,6 +103,7 @@ def record_meta_usage(response) -> None:
             "percent": round(max(percents, default=0.0), 1), "details": details,
             "regain": regain, "observed_at": utcnow(),
         }
+    meta_budget.observe(max(percents, default=0.0), regain)  # used before the next Meta call
 
 
 def groq_day(now: datetime | None = None) -> str:
@@ -192,10 +194,15 @@ def flush() -> int:
         pending = dict(_pending)
         _pending.clear()
         meta, _meta_latest = _meta_latest, None
-    if not pending and meta is None:
+    budget_state = meta_budget.snapshot()
+    if not pending and meta is None and budget_state is None:
         return 0
     try:
         with session_scope() as db:
+            if budget_state is not None:  # Meta call log of the last hour (survives restarts)
+                saved = db.get(ApiRateStatus, meta_budget.STATE_SERVICE) or ApiRateStatus(service=meta_budget.STATE_SERVICE)
+                saved.details, saved.observed_at = budget_state, utcnow()
+                db.add(saved)
             if meta is not None:  # latest Meta rate-limit reading (one row, overwritten)
                 status = db.get(ApiRateStatus, INSTAGRAM) or ApiRateStatus(service=INSTAGRAM)
                 status.percent, status.details = meta["percent"], meta["details"]
@@ -214,6 +221,8 @@ def flush() -> int:
                     except IntegrityError:  # another process inserted the row first
                         db.execute(update(ApiUsage).where(*where).values(**values))
     except Exception:
+        if budget_state is not None:
+            meta_budget.mark_unsaved()
         with _lock:  # keep the counts for the next attempt
             if meta is not None and _meta_latest is None:
                 _meta_latest = meta
@@ -249,10 +258,23 @@ class YouTubeQuota(BaseModel):
     note: str
 
 
+META_METRICS = ("call_count", "total_cputime", "total_time")  # the three percentages Meta reports
+
+
+class MetaUsageMetrics(BaseModel):
+    """Meta-reported usage percentages of its rolling one-hour limit (highest across app and business use case)."""
+    call_count: float | None = None
+    total_cputime: float | None = None
+    total_time: float | None = None
+
+
 class InstagramUsage(BaseModel):
     calls_today: int
     facebook_calls_today: int = 0  # same Meta app limit
-    percent: float  # share of Meta's rolling one-hour limit (as reported by Meta)
+    percent: float  # highest of Meta's three reported percentages (rolling one-hour limit)
+    metrics: MetaUsageMetrics = MetaUsageMetrics()  # each percentage as reported by Meta (empty when stale)
+    safety_stop_percent: float = 80.0  # CreatorIntel stops calling Meta when any reported percentage reaches this
+    resume_at: datetime | None = None  # when Meta calls continue (None = not paused)
     observed_at: datetime | None
     stale: bool  # no Graph API call in the last hour, so the hourly usage has reset
     regain_access_minutes: int | None
@@ -264,28 +286,52 @@ class ApiUsageOut(BaseModel):
     instagram: InstagramUsage
 
 
+def meta_metrics(details: dict | None) -> MetaUsageMetrics:
+    """Each metric's highest value across X-App-Usage and X-Business-Use-Case-Usage entries."""
+    entries = [(details or {}).get("app") or {}, *((details or {}).get("business_use_case") or [])]
+    values = {}
+    for name in META_METRICS:
+        found = [float(e[name]) for e in entries if isinstance(e, dict) and isinstance(e.get(name), (int, float))]
+        values[name] = max(found) if found else None
+    return MetaUsageMetrics(**values)
+
+
+def latest_meta_reading() -> tuple[float, MetaUsageMetrics, datetime | None, int | None]:
+    """Meta's latest usage report: (highest percent, per-metric percents, observed at, regain minutes)."""
+    with _lock:
+        meta = dict(_meta_latest) if _meta_latest else None
+    if meta:
+        return meta["percent"], meta_metrics(meta["details"]), meta["observed_at"], meta["regain"]
+    with ReadSessionLocal() as db:
+        status = db.get(ApiRateStatus, INSTAGRAM)
+    if status is None:
+        return 0.0, MetaUsageMetrics(), None, None
+    observed = as_utc(status.observed_at) if status.observed_at else None
+    return status.percent or 0.0, meta_metrics(status.details), observed, status.regain_access_minutes
+
+
 def instagram_usage() -> InstagramUsage:
     day = local_day()
     with ReadSessionLocal() as db:
         row = db.get(ApiUsage, (day, INSTAGRAM, "app"))
         fb_row = db.get(ApiUsage, (day, FACEBOOK, "app"))
-        status = db.get(ApiRateStatus, INSTAGRAM)
     with _lock:
         pending_calls = _pending.get((day, INSTAGRAM, "app"), [0, 0, None])[1]
         fb_pending = _pending.get((day, FACEBOOK, "app"), [0, 0, None])[1]
-        meta = dict(_meta_latest) if _meta_latest else None
-    observed = meta["observed_at"] if meta else (as_utc(status.observed_at) if status else None)
-    percent = meta["percent"] if meta else (status.percent if status else 0.0)
-    regain = meta["regain"] if meta else (status.regain_access_minutes if status else None)
+    percent, metrics, observed, regain = latest_meta_reading()
     stale = observed is None or utcnow() - observed > timedelta(minutes=META_WINDOW_MINUTES)
     return InstagramUsage(
         calls_today=(row.calls if row else 0) + pending_calls,
         facebook_calls_today=(fb_row.calls if fb_row else 0) + fb_pending,
         percent=0.0 if stale else percent,
+        metrics=MetaUsageMetrics() if stale else metrics,
+        safety_stop_percent=get_settings().meta_usage_stop_percent,
+        resume_at=meta_budget.status()["resume_at"],
         observed_at=observed,
         stale=stale,
         regain_access_minutes=None if stale else regain,
-        note="Percent of Meta's rolling one-hour rate limit, as reported by Meta on each API response.",
+        note="Meta reports three percentages of its rolling one-hour limit (call count, CPU time, total time) "
+             "on each API response; the highest is shown.",
     )
 
 

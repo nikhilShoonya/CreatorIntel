@@ -21,7 +21,7 @@ function subscribe(callback: () => void) {
   };
 }
 
-/** The upload shown on the Upload & Analyze page (also read by the top bar's "Refresh data"). */
+/** The upload shown on the Upload & Analyze page. */
 export const LAST_UPLOAD_KEY = "creatorintel:last-upload";
 
 /** Per-browser convenience value (e.g. display name, last upload). Never used for secrets. */

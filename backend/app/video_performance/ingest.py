@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
+from openpyxl import load_workbook
 
 from app.utils.text import clean_text
 from app.video_performance.share_links import ShareResolution, resolution_note
@@ -16,12 +17,14 @@ ALLOWED = {".xlsx", ".xls", ".csv"}
 MAX_ROWS = 2000
 HEADER_SEARCH_ROWS = 10
 
-_LINK = {"videolink", "videourl", "link", "url", "reellink", "reelurl", "video", "postlink", "posturl", "videos"}
+_LINK = {"videolink", "videourl", "link", "url", "reellink", "reelurl", "video", "postlink", "posturl", "videos",
+         "instagramreelurl", "instagramreellink", "igreelurl", "igreellink", "instagramreelshortcode"}
 _CREATOR = {"creatorname", "creator", "channelname", "channel", "name", "influencer", "influencername", "accountname"}
 _PLATFORM = {"platform", "source", "site"}
 _OWNER = {
     "username", "handle", "creatorhandle", "instagramusername", "instagramhandle", "iguser", "igusername",
     "creatorlink", "profilelink", "profileurl", "channellink", "accountlink",
+    "instagramprofile", "instagramprofileurl", "instagramprofilelink", "creatorusername", "ownerusername",
 }
 
 
@@ -88,7 +91,22 @@ def read_grid(kind: str, content: bytes) -> pd.DataFrame:
         width = max((len(r) for r in rows), default=0)
         return pd.DataFrame([r + [""] * (width - len(r)) for r in rows], dtype=str)
     engine = "openpyxl" if kind == "xlsx" else "xlrd"
-    return pd.read_excel(io.BytesIO(content), header=None, dtype=str, keep_default_na=False, engine=engine)
+    grid = pd.read_excel(io.BytesIO(content), header=None, dtype=str, keep_default_na=False, engine=engine)
+    if kind == "xlsx":
+        workbook = load_workbook(io.BytesIO(content), data_only=False)
+        try:
+            links = {}
+            for cells in workbook.worksheets[0].iter_rows():
+                for cell in cells:
+                    target = cell.hyperlink.target if cell.hyperlink else None
+                    # Only a literal HYPERLINK URL is supported; never evaluate workbook formulas.
+                    formula = re.fullmatch(r'=HYPERLINK\(\s*"([^"]+)"\s*[,;].*\)', str(cell.value or ""), re.I)
+                    if target or formula:
+                        links[(cell.row, cell.column - 1)] = target or formula.group(1)
+            grid.attrs["hyperlinks"] = links
+        finally:
+            workbook.close()
+    return grid
 
 
 def header_labels(values: list) -> list[str]:
@@ -143,27 +161,55 @@ def parse_import(
 
     result = ImportResult()
     seen: set[tuple[str, str]] = set()
+    hyperlinks = grid.attrs.get("hyperlinks", {})
+    labels = list(frame.columns)
+    owner_columns = [label for label in labels if _key(label) in _OWNER]
     for index, record in enumerate(frame.to_dict("records"), start=header_row + 1):
-        link = clean_text(record.get(columns["link"], ""))[:2048]
+        def cell_link(column):
+            return hyperlinks.get((index, labels.index(column))) if column is not None else None
+
+        cell_value = clean_text(record.get(columns["link"], ""))[:2048]
+        link = cell_link(columns["link"]) or cell_value
         creator = clean_text(record.get(columns["creator"], "")) if columns["creator"] else ""
         platform_hint = clean_text(record.get(columns["platform"], "")).lower() if columns["platform"] else ""
-        owner_cell = record.get(columns["owner"], "") if columns["owner"] else ""
         if not link and not creator:
             continue
         if len(result.rows) >= MAX_ROWS:
             raise ImportError_(f"File has more than {MAX_ROWS} rows. Split it into smaller files.")
 
         resolution = (resolutions or {}).get(link)
-        parsed = parse_video_link(resolution.resolved_url if resolution and resolution.resolved_url else link)
-        # Instagram needs the reel owner: explicit username column, the link itself, or a handle-like creator cell.
-        owner = (
-            (parse_instagram_handle(owner_cell) or parsed.owner_username or parse_instagram_handle(creator))
-            if parsed.platform == "instagram"
-            else None
-        )
+        reel_hint = (platform_hint in {"instagram", "ig"} or _key(columns["link"]) in {
+            "instagramreelurl", "instagramreellink", "igreelurl", "igreellink", "instagramreelshortcode",
+        })
+        parsed = parse_video_link(resolution.resolved_url if resolution and resolution.resolved_url else link,
+                                  instagram_reel_hint=reel_hint)
+        visible = parse_video_link(cell_value, instagram_reel_hint=reel_hint)
+        owners = {}
+        if parsed.platform == "instagram":
+            sources = [("source URL", parsed.owner_username)]
+            if visible.ok and (visible.platform, visible.identifier) == (parsed.platform, parsed.identifier):
+                sources.append(("visible URL", visible.owner_username))
+            for column in owner_columns:
+                target = cell_link(column)
+                value = clean_text(record.get(column))
+                # In a profile-link column, a hyperlink's friendly label is not another username.
+                if not target or "username" in _key(column) or "handle" in _key(column) or value.startswith("@") or "/" in value:
+                    sources.append((column, value))
+                sources.append((f"{column} hyperlink", target))
+            # An explicit @handle or Instagram profile hyperlink is trustworthy; a display name is not.
+            if creator.startswith("@") or "/" in creator:
+                sources.append(("Creator Name", creator))
+            sources.append(("Creator Name hyperlink", cell_link(columns["creator"])))
+            owners = {source: handle for source, value in sources if (handle := parse_instagram_handle(value))}
+        owner = next(iter(owners.values()), None) if len(set(owners.values())) <= 1 else None
         row = ImportRow(index, creator[:300] or None, parsed, owner, raw_link=link, raw_platform=platform_hint or None)
         if not parsed.ok:
             row.status, row.message = "invalid", (resolution.error if resolution and resolution.error else parsed.error)
+        elif cell_link(columns["link"]) and visible.ok and (visible.platform, visible.identifier) != (parsed.platform, parsed.identifier):
+            row.status, row.message = "invalid", "Conflicting video link cell value and hyperlink target; correct the workbook link"
+        elif len(set(owners.values())) > 1:
+            row.status = "invalid"
+            row.message = "Conflicting Instagram owner metadata: " + ", ".join(f"{source}=@{name}" for source, name in owners.items())
         else:
             notes = [resolution_note(parsed.url)] if resolution and resolution.resolved_url else []
             aliases = {"youtube": "yt", "instagram": "ig", "facebook": "fb"}

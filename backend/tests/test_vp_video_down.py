@@ -115,7 +115,7 @@ def test_video_down_can_be_retried_and_filtered(setup):
 
 
 def test_old_reel_outside_scan_window_is_not_called_down():
-    """A reel missing from a *partial* scan may just be older - that is Unsupported, not Video Down."""
+    """A missing never-seen reel does not establish that its media is unsupported or down."""
     settings = get_settings()
     many = [{"id": str(i), "permalink": f"https://www.instagram.com/reel/Reel{i:05d}/", "media_type": "VIDEO",
              "media_product_type": "REELS", "timestamp": "2026-09-01T10:00:00+0000", "like_count": 1,
@@ -132,4 +132,4 @@ def test_old_reel_outside_scan_window_is_not_called_down():
     )
     results: dict = {}
     asyncio.run(tracker._instagram_owner(IG_OWNER, [{"id": 1, "identifier": "OldReel99"}], results))
-    assert results[1].code == "unsupported" and "older than" in results[1].message
+    assert results[1].code == "owner_unresolved" and "check the Instagram username" in results[1].message

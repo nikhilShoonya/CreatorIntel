@@ -52,7 +52,7 @@ export default function CreatorAnalyticsDashboard() {
   const [exportError, setExportError] = useState<string | null>(null);
   const { data, error, reload } = useApi(`creator-dashboard:${days}`, () => api.creatorDashboard(days), {
     keepPrevious: true,
-    // follow creators being analysed right now; otherwise only reload on demand ("Refresh data")
+    // follow creators being analysed right now; otherwise the stored data is shown as it is
     refreshMs: (d: CreatorDashboard | undefined) => (d && d.in_progress > 0 ? 5000 : false),
   });
 

@@ -31,6 +31,10 @@ class VideoOut(BaseModel):
     creator_name: str | None
     creator_id: int | None
     owner_username: str | None
+    instagram_media_kind: str | None = None
+    metrics_source: str | None = None
+    view_metric: str | None = None
+    source_metrics: dict | None = None
     source: str
     current_views: int | None
     previous_views: int | None
@@ -88,6 +92,9 @@ class SnapshotOut(BaseModel):
     views_change: int | None
     # An older, lower count the API returned shortly after a higher one - not used for any calculation.
     outdated: bool = False
+    metrics_source: str | None = None
+    view_metric: str | None = None
+    source_metrics: dict | None = None
 
 
 class HistoryOut(BaseModel):
@@ -129,6 +136,11 @@ class UploadOut(BaseModel):
     file_deleted_at: UTC | None = None
     file_delete_after: UTC | None = None
     file_available: bool = False  # the original file can still be downloaded
+    # Instagram / Facebook videos this file added, and how many still wait for Meta's hourly limit
+    instagram_total: int = 0
+    instagram_waiting: int = 0
+    facebook_total: int = 0
+    facebook_waiting: int = 0
 
 
 class UploadUpdateIn(BaseModel):

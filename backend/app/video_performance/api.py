@@ -9,6 +9,7 @@ from typing import Any, Literal, cast
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel, Field
 
 from app.config.settings import get_settings
 from app.utils.logging import log_event
@@ -50,6 +51,28 @@ logger = logging.getLogger("creatorintel.video_performance.api")
 router = APIRouter(prefix="/api/video-performance", tags=["video-performance"])
 
 PAGE_SIZES = (10, 25, 50, 100)
+
+
+class ApifyReconcileIn(BaseModel):
+    confirmed_remote_state: bool
+    remote_run_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,100}$")
+
+
+@router.post("/apify-runs/{run_id}/reconcile", response_model=ActionOut)
+async def reconcile_apify_run(run_id: str, body: ApifyReconcileIn):
+    """Exceptional operator recovery, never a new scrape or a billing-counter reset."""
+    from app.video_performance.apify_repository import reconcile
+    from sqlalchemy.exc import IntegrityError
+
+    if not body.confirmed_remote_state:
+        raise HTTPException(status_code=422, detail="Check the remote run in Apify Console before reconciling")
+    try:
+        changed = await run_in_threadpool(reconcile, run_id, body.remote_run_id)
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="That remote run is already associated with another batch") from exc
+    if not changed:
+        raise HTTPException(status_code=409, detail="Only uncertain submissions without a saved remote run ID can be reconciled")
+    return ActionOut(affected=1, message="Remote state recorded; retry the affected videos. Usage reservations were retained")
 
 
 def get_tracker(request: Request) -> VideoTracker:
@@ -356,7 +379,7 @@ async def add_video(body: VideoCreateIn, request: Request, tracker: VideoTracker
     parsed = await _parse_link(body.video_url, _share_resolver(request))
     owner = _username(body.instagram_username) if parsed.platform == "instagram" else None
     creator = clean_text(body.creator_name)[:300] if body.creator_name else None
-    if parsed.platform == "instagram" and not owner:
+    if parsed.platform == "instagram" and not owner and ((creator or "").startswith("@") or "/" in (creator or "")):
         owner = parse_instagram_handle(creator)
     try:
         video_id = await run_in_threadpool(repo.add_video, parsed, creator, owner, "manual")
@@ -379,7 +402,9 @@ async def update_video(
     elif parsed is not None and parsed.platform == "instagram":
         # Match the create endpoint: when the permalink does not include the
         # owner, a creator name that is an Instagram handle is still usable.
-        owner = parsed.owner_username or parse_instagram_handle(body.creator_name)
+        owner = parsed.owner_username
+        if not owner and ((body.creator_name or "").startswith("@") or "/" in (body.creator_name or "")):
+            owner = parse_instagram_handle(body.creator_name)
     try:
         reprocess = await run_in_threadpool(
             lambda: repo.update_video(
@@ -477,7 +502,7 @@ async def bulk_videos(body: BulkIn, tracker: VideoTracker = Depends(get_tracker)
         return ActionOut(affected=len(resumed), message=f"Started tracking {len(resumed)} video{'s' if len(resumed) != 1 else ''}")
     queued = await run_in_threadpool(repo.queue_for_processing, ids)
     tracker.start_processing(queued)
-    return ActionOut(affected=len(queued), message=f"Refreshing {len(queued)} video{'s' if len(queued) != 1 else ''}")
+    return ActionOut(affected=len(queued), message=f"Queued {len(queued)} video{'s' if len(queued) != 1 else ''} for refresh; check each video's status for results")
 
 
 @router.get("/history/{video_id}", response_model=HistoryOut)

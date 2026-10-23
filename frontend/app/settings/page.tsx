@@ -9,6 +9,7 @@ import { Button, Card, ErrorBanner } from "@/components/ui/controls";
 import { PlatformIcon } from "@/components/ui/PlatformIcon";
 import { useConfigStatus } from "@/hooks/useData";
 import { useStoredValue } from "@/hooks/useStoredValue";
+import { ApifyUsageCard } from "@/components/layout/ApifyUsageCard";
 
 function Integration({ icon, name, configured, detail, envVar }: { icon: ReactNode; name: string; configured: boolean; detail: string; envVar: string }) {
   return (
@@ -106,6 +107,7 @@ export default function SettingsPage() {
             />
             {config.instagram_configured && <TokenStatusCard />}
             {config.instagram_configured && <InstagramUsageCard />}
+            <ApifyUsageCard />
             <Integration
               icon={<PlatformIcon platform="facebook" size={22} />}
               name={`Facebook Graph API (${config.meta_api_version})`}

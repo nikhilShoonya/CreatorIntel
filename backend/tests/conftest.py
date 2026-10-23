@@ -20,6 +20,8 @@ os.environ.update(
         "YOUTUBE_API_KEY": "test-youtube-key",
         "META_ACCESS_TOKEN": "test-meta-token",
         "META_APP_SECRET": "test-app-secret",
+        "APIFY_API_TOKEN": "",
+        "APIFY_INSTAGRAM_REEL_ENABLED": "false",
         "META_IG_BUSINESS_ACCOUNT_ID": "17840000000000000",
         "GROQ_API_KEY": "test-groq-key",
         # never pick up real numbered keys from backend/.env in tests
@@ -41,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest  # noqa: E402
 
-from app.services import youtube_keys  # noqa: E402
+from app.services import meta_budget, youtube_keys  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -50,3 +52,32 @@ def _fresh_youtube_key_state():
     youtube_keys.reset()
     yield
     youtube_keys.reset()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_owner_search_memory():
+    """Which accounts were searched for which reel is remembered in the database - not across tests."""
+    def clear():
+        try:
+            from app.models.db import session_scope
+            from app.models.usage import ApiRateStatus
+            from app.video_performance.repository import OWNER_SEARCH_SERVICE
+
+            with session_scope() as db:
+                row = db.get(ApiRateStatus, OWNER_SEARCH_SERVICE)
+                if row is not None:
+                    db.delete(row)
+        except Exception:  # tables not created yet in this test session
+            pass
+
+    clear()
+    yield
+    clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_meta_budget():
+    """Each test starts with an unused Meta call budget (and no rate-limit pause)."""
+    meta_budget.reset()
+    yield
+    meta_budget.reset()

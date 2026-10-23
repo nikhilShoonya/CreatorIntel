@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
-import { ExternalLink, Loader2, Pencil, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, Pencil, RefreshCw, Sparkles, Trash2, X } from "lucide-react";
 
 import { SentimentBadge, StatusBadge } from "@/components/ui/Badges";
 import { Button, ErrorBanner } from "@/components/ui/controls";
@@ -25,7 +25,8 @@ import { isBusy } from "./RowActions";
 interface Props {
   creatorId: number | null;
   onClose: () => void;
-  onAction: (kind: "retry" | "reanalyze", creatorId: number) => Promise<void>;
+  /** Resolves true when the action was started. */
+  onAction: (kind: "retry" | "reanalyze" | "refresh_profile", creatorId: number) => Promise<boolean>;
   onEdit: (creator: CreatorDetail) => void;
   onDelete: (creator: CreatorDetail) => void;
 }
@@ -39,9 +40,18 @@ const ACCESS_LABELS: Record<string, string> = {
   not_found: "Not found",
 };
 
+// `before` = the creator's updated_at when the button was clicked: the server changes it as soon as the refresh
+// is queued, so an unchanged value means the panel still shows data from before the refresh.
+type ProfileRefresh = { creatorId: number; phase: "starting" | "running" | "failed-to-start"; before: string } | null;
+
 export function CreatorDetailsPanel({ creatorId, onClose, onAction, onEdit, onDelete }: Props) {
   const { data: creator, error, reload } = useCreatorDetail(creatorId);
   const open = creatorId !== null;
+  const [profileRefresh, setProfileRefresh] = useState<ProfileRefresh>(null);
+  // The panel polls while the creator is being processed; the outcome is shown once it is final.
+  const refreshing = !!profileRefresh && profileRefresh.creatorId === creator?.id && profileRefresh.phase !== "failed-to-start";
+  const refreshDone =
+    refreshing && profileRefresh?.phase === "running" && !!creator && !isBusy(creator) && creator.updated_at !== profileRefresh.before;
 
   useEffect(() => {
     if (!open) return;
@@ -61,6 +71,16 @@ export function CreatorDetailsPanel({ creatorId, onClose, onAction, onEdit, onDe
   async function act(kind: "retry" | "reanalyze") {
     if (!creator) return;
     await onAction(kind, creator.id);
+    reload();
+  }
+
+  async function refreshProfile() {
+    if (!creator) return;
+    const id = creator.id;
+    const before = creator.updated_at;
+    setProfileRefresh({ creatorId: id, phase: "starting", before });
+    const started = await onAction("refresh_profile", id);
+    setProfileRefresh({ creatorId: id, phase: started ? "running" : "failed-to-start", before });
     reload();
   }
 
@@ -95,6 +115,9 @@ export function CreatorDetailsPanel({ creatorId, onClose, onAction, onEdit, onDe
               <Loader2 className="animate-spin text-slate-400" />
             </div>
           )}
+          {creator && profileRefresh?.creatorId === creator.id && (
+            <ProfileRefreshStatus creator={creator} phase={refreshDone ? "done" : profileRefresh.phase} />
+          )}
           {creator && <DetailBody creator={creator} />}
         </div>
 
@@ -127,13 +150,58 @@ export function CreatorDetailsPanel({ creatorId, onClose, onAction, onEdit, onDe
               <Sparkles size={15} />
               Re-analyze
             </Button>
-            <Button variant="primary" onClick={() => act("retry")} disabled={isBusy(creator) || creator.platform === "invalid" || creator.platform === "unsupported"}>
-              <RefreshCw size={15} />
-              {creator.status === "Failed" || creator.status === "Partial" ? "Retry" : "Refresh Data"}
+            {creator.status === "Failed" && (
+              <Button onClick={() => act("retry")} disabled={isBusy(creator) || creator.platform === "invalid" || creator.platform === "unsupported"}>
+                <RefreshCw size={15} />
+                Retry
+              </Button>
+            )}
+            <Button
+              variant="primary"
+              onClick={refreshProfile}
+              disabled={isBusy(creator) || (refreshing && !refreshDone) || creator.platform === "invalid" || creator.platform === "unsupported"}
+              title="Fetch this creator's latest YouTube / Instagram data now (the AI analysis is kept - use Re-analyze for that)"
+            >
+              {refreshing && !refreshDone ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+              {refreshing && !refreshDone ? "Refreshing…" : "Refresh Profile"}
             </Button>
           </footer>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Loading / success / partial-success / failure of the last Refresh Profile in this panel. */
+function ProfileRefreshStatus({ creator, phase }: { creator: CreatorDetail; phase: "starting" | "running" | "failed-to-start" | "done" }) {
+  const box = "mb-4 flex items-start gap-2 rounded-lg border px-3 py-2.5 text-sm";
+  if (phase === "failed-to-start")
+    return <div role="alert" className={`${box} border-rose-200 bg-rose-50 text-rose-700`}>Could not start the profile refresh. Please try again.</div>;
+  if (phase !== "done")
+    return (
+      <div role="status" className={`${box} border-indigo-200 bg-accent-soft text-accent`}>
+        <Loader2 size={15} className="mt-0.5 shrink-0 animate-spin" />
+        Refreshing profile data from {platformLabel(creator.platform)}…
+      </div>
+    );
+  if (creator.status === "Completed")
+    return (
+      <div role="status" className={`${box} border-emerald-200 bg-emerald-50 text-emerald-800`}>
+        <CheckCircle2 size={15} className="mt-0.5 shrink-0" />
+        Profile refreshed - the numbers below are the latest from {platformLabel(creator.platform)}.
+      </div>
+    );
+  if (creator.status === "Partial")
+    return (
+      <div role="status" className={`${box} border-amber-200 bg-amber-50 text-amber-800`}>
+        <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+        <span>Profile refreshed, but some data is missing{creator.error_message ? `: ${creator.error_message}` : "."}</span>
+      </div>
+    );
+  return (
+    <div role="alert" className={`${box} border-rose-200 bg-rose-50 text-rose-700`}>
+      <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+      <span>Profile refresh failed{creator.error_message ? `: ${creator.error_message}` : "."}</span>
     </div>
   );
 }

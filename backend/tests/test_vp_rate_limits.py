@@ -44,18 +44,19 @@ def reels(api):
     repo.delete_videos(list(ids))
 
 
-def test_rate_limit_keeps_good_numbers_tracking(reels):
+def test_rate_limit_queues_the_video_and_keeps_its_numbers(reels):
     (seen, new), checked_at = reels
     error = PlatformError(PlatformError.RATE_LIMITED, "@rate_owner_a: Instagram API rate limit reached, try again later")
     repo.save_error(seen, error)
     repo.save_error(new, error)
     with session_scope() as db:
         good, fresh = db.get(VtVideo, seen), db.get(VtVideo, new)
-        assert good.status == VideoStatus.TRACKING and good.current_views == 19_511
+        assert good.status == VideoStatus.PENDING and good.current_views == 19_511  # stored numbers kept
         assert abs((as_utc(good.last_checked_at) - checked_at).total_seconds()) < 1  # last SUCCESSFUL check
-        assert good.status_reason.startswith("Latest check failed (@rate_owner_a: Instagram API rate limit reached")
-        assert "retried automatically" in good.status_reason
-        assert fresh.status == VideoStatus.FAILED  # never had numbers: a real failure
+        assert good.status_reason.startswith("Pending - waiting for Meta's hourly limit (Instagram API rate limit reached")
+        assert "showing the numbers from" in good.status_reason
+        assert fresh.status == VideoStatus.PENDING  # never had numbers: queued too, not failed
+    assert {seen, new} <= set(repo.meta_waiting_ids())  # continued automatically by the Meta queue
 
     repo.save_error(seen, PlatformError(PlatformError.AUTH, "Meta access token is invalid or expired"))
     with session_scope() as db:
@@ -80,46 +81,42 @@ class _RateLimitedInstagram:
     def __init__(self):
         self.owners: list[str] = []
 
-    async def profile_media(self, owner: str, pages: int = 1):
+    async def profile_media(self, owner: str, pages: int = 1, **_kwargs):
         self.owners.append(owner)
         raise PlatformError(PlatformError.RATE_LIMITED, "Instagram API rate limit reached, try again later")
 
 
-def test_run_stops_calling_after_a_rate_limit_and_retries_later(reels):
+def test_run_stops_calling_after_a_rate_limit_and_queues_the_rest(reels):
     (seen, new), _ = reels
     instagram = _RateLimitedInstagram()
     tracker = VideoTracker(get_settings(), instagram=instagram)
 
     async def run():
         await tracker.process_videos([seen, new])
-        pending = set(tracker._retry_pending)
         await tracker.shutdown()
-        return pending
 
-    pending = asyncio.run(run())
+    asyncio.run(run())
     assert len(instagram.owners) == 1  # the second owner was not called after Meta refused
-    assert pending == {seen, new}  # both are checked again automatically after the hourly window
+    assert {seen, new} <= set(repo.meta_waiting_ids())  # both wait in the Meta queue (survives restarts)
     with session_scope() as db:
-        assert db.get(VtVideo, seen).status == VideoStatus.TRACKING
+        assert db.get(VtVideo, seen).status == VideoStatus.PENDING and db.get(VtVideo, seen).current_views == 19_511
 
 
-def test_repair_turns_rate_limit_failures_with_numbers_back_to_tracking(reels):
+def test_repair_moves_old_rate_limit_failures_into_the_meta_queue(reels):
     (seen, new), checked_at = reels
-    with session_scope() as db:  # as the old code left them: Failed, "last checked" = the failed attempt
+    with session_scope() as db:  # as older versions left them: Failed, "last checked" = the failed attempt
         for vid in (seen, new):
             video = db.get(VtVideo, vid)
             video.status = VideoStatus.FAILED
             video.status_reason = "@rate_owner_a: Instagram API rate limit reached, try again later"
             video.last_checked_at = utcnow()
 
-    repaired = repo.repair_temporary_failures()
-    assert seen in repaired and new not in repaired  # the never-checked reel has no numbers to keep
+    waiting = repo.repair_temporary_failures()
+    assert seen in waiting and new in waiting
     with session_scope() as db:
-        good = db.get(VtVideo, seen)
-        assert good.status == VideoStatus.TRACKING
-        assert abs((as_utc(good.last_checked_at) - checked_at).total_seconds()) < 1
-        assert good.status_reason.startswith("Latest check failed (Instagram API rate limit reached")
-    # nothing left to repair, but it is still returned: its automatic re-check must survive a backend restart
-    assert seen in repo.repair_temporary_failures()
-    with session_scope() as db:
-        assert db.get(VtVideo, seen).status == VideoStatus.TRACKING
+        good, fresh = db.get(VtVideo, seen), db.get(VtVideo, new)
+        assert good.status == fresh.status == VideoStatus.PENDING
+        assert abs((as_utc(good.last_checked_at) - checked_at).total_seconds()) < 1  # last successful check
+        assert good.current_views == 19_511
+        assert good.status_reason.startswith("Pending - waiting for Meta's hourly limit (Instagram API rate limit reached")
+    assert seen in repo.repair_temporary_failures()  # idempotent: still waiting, nothing changed twice

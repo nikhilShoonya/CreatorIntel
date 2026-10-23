@@ -7,7 +7,7 @@ import { useApi } from "@/hooks/useApi";
 import { useStoredValue } from "@/hooks/useStoredValue";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
-import type { ApiUsage, GroqKeyStatus, InstagramTokenStatus } from "@/types";
+import type { ApiUsage, GroqKeyStatus, InstagramTokenStatus, MetaUsageMetrics } from "@/types";
 
 const PROBLEM: InstagramTokenStatus["state"][] = ["expired", "invalid", "wrong_type", "expiring"];
 const DISMISS_KEY = "creatorintel:token-banner-dismissed";
@@ -46,7 +46,7 @@ export function TokenBanner() {
 
 /** Token details for the Settings page. */
 export function TokenStatusCard() {
-  // "Refresh data" in the top bar re-checks the token with Meta (force = true).
+  // `force` re-checks the token with Meta when all data on screen is reloaded (refreshAllData).
   const { data, error } = useApi("ig-token-settings", ({ force }) => api.instagramToken(force), { keepPrevious: true });
   const good = data?.state === "ok";
   const warn = data?.state === "expiring" || data?.state === "unknown";
@@ -175,6 +175,12 @@ export function YouTubeQuotaCard() {
   );
 }
 
+const META_METRICS: { key: keyof MetaUsageMetrics; label: string }[] = [
+  { key: "call_count", label: "Call count" },
+  { key: "total_cputime", label: "CPU time" },
+  { key: "total_time", label: "Total time" },
+];
+
 /** Instagram Graph API calls today and Meta's own report of its hourly rate limit. */
 export function InstagramUsageCard() {
   const { data, error } = useUsage();
@@ -182,25 +188,43 @@ export function InstagramUsageCard() {
   if (!data) return <div className="mx-5 my-4 h-10 animate-pulse rounded bg-slate-100" />;
   const ig = data.instagram;
   const blocked = (ig.regain_access_minutes ?? 0) > 0;
+  const metrics = ig.metrics ?? { call_count: null, total_cputime: null, total_time: null };
+  const reported = !ig.stale && META_METRICS.some(({ key }) => metrics[key] !== null);
   return (
     <UsageShell title="Meta API usage (Instagram + Facebook)" aside="Meta's limit is a rolling one-hour window">
       <p className="mt-3 flex flex-wrap items-baseline justify-between gap-x-3 text-sm">
         <span className="tabular-nums text-slate-700">
-          <span className="font-semibold text-ink">{ig.percent}%</span> of Meta&apos;s hourly limit used
+          <span className="font-semibold text-ink">{ig.percent}%</span> highest Meta-reported usage
         </span>
         <span className="text-xs tabular-nums text-muted">
           {units(ig.calls_today)} Instagram · {units(ig.facebook_calls_today)} Facebook call
           {ig.calls_today + ig.facebook_calls_today === 1 ? "" : "s"} today
         </span>
       </p>
-      <UsageBar label="Instagram hourly limit used" percent={Math.min(ig.percent, 100)} full={blocked} valueNow={ig.percent} valueMax={100} />
+      <UsageBar label="Highest Meta-reported usage" percent={Math.min(ig.percent, 100)} full={blocked} valueNow={ig.percent} valueMax={100} />
+      {reported && (
+        <dl className="mt-2 grid grid-cols-3 gap-2 text-xs tabular-nums">
+          {META_METRICS.map(({ key, label }) => (
+            <div key={key} className="rounded bg-slate-50 px-2 py-1">
+              <dt className="text-muted">{label}</dt>
+              <dd className="font-medium text-ink">{metrics[key] === null ? "N/A" : `${metrics[key]}%`}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
       {blocked ? (
         <p className="mt-2 text-xs font-medium text-rose-600">
           Meta is throttling requests. Access returns in about {ig.regain_access_minutes} min.
         </p>
+      ) : ig.resume_at ? (
+        <p className="mt-2 text-xs font-medium text-amber-700">
+          Meta calls are paused by CreatorIntel&apos;s {ig.safety_stop_percent}% safety stop (not a Meta refusal).
+          They continue after {clockTime(ig.resume_at)}.
+        </p>
       ) : (
         <p className="mt-2 text-xs text-muted">
-          Meta&apos;s standard limit is roughly 200 requests per hour for a connected Professional account.
+          Meta-reported usage percentages of its rolling one-hour limit: call count, CPU time and total time. The
+          bar shows the highest. CreatorIntel pauses Meta calls at {ig.safety_stop_percent}%.
         </p>
       )}
       <p className="mt-2 text-xs text-muted">

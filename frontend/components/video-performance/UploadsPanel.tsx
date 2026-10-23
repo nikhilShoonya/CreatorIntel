@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { Download, FileSpreadsheet, FileText, Loader2, MoreVertical, Pencil, RefreshCw, Trash2, Upload } from "lucide-react";
+import { Clock3, Download, FileSpreadsheet, FileText, Loader2, MoreVertical, Pencil, RefreshCw, Trash2, Upload } from "lucide-react";
 
 import { Button, EmptyState, ErrorBanner } from "@/components/ui/controls";
 import { ConfirmDialog, Dialog } from "@/components/ui/Dialog";
 import { FileStatusText } from "@/components/ui/FileRowsDialog";
 import { Menu } from "@/components/ui/Menu";
+import { metaUploadProgress, useMetaQueue } from "@/components/ui/MetaQueueBanner";
 import { useApi } from "@/hooks/useApi";
 import { formatDateTime } from "@/lib/format";
 import { vpApi } from "@/lib/vpApi";
@@ -29,6 +30,7 @@ function UploadVideosDialog({
 }) {
   const [refreshToken, setRefreshToken] = useState(0);
   const [showInvalid, setShowInvalid] = useState(false);
+  const { data: metaQueue } = useMetaQueue();
   const tracked = useApi(upload ? `vp-upload-total:${upload.id}:${refreshToken}` : null, () => vpApi.videos({ upload_id: upload!.id }, 1, 10), {
     keepPrevious: true,
   });
@@ -47,6 +49,11 @@ function UploadVideosDialog({
               <FileSpreadsheet size={15} className="text-emerald-600" /> Uploaded {formatDateTime(upload.created_at)}
             </span>
             <FileStatusText deletedAt={upload.file_deleted_at} />
+            {metaUploadProgress(upload, metaQueue) && (
+              <span className="inline-flex items-center gap-1.5 text-amber-700">
+                <Clock3 size={14} /> {metaUploadProgress(upload, metaQueue)}
+              </span>
+            )}
           </div>
           <p className="text-sm text-slate-600">
             <span className="font-semibold text-ink">{inFile}</span> video{inFile === 1 ? "" : "s"} in this file
@@ -169,13 +176,21 @@ export function UploadsPanel({
   onToast,
   onChanged,
   onUpload,
+  query = "",
 }: {
   refreshToken: number;
   onToast: Toast;
   onChanged: () => void;
   onUpload: () => void;
+  /** Only uploads whose file name contains this text (History page search). */
+  query?: string;
 }) {
-  const { data, error, reload } = useApi(`vp-uploads:${refreshToken}`, () => vpApi.uploads(), { keepPrevious: true });
+  const { data: metaQueue } = useMetaQueue();
+  const { data, error, reload } = useApi(`vp-uploads:${refreshToken}`, () => vpApi.uploads(), {
+    keepPrevious: true,
+    // follow files whose Instagram / Facebook videos are still waiting for Meta's hourly limit
+    refreshMs: (d: VpUpload[] | undefined) => (d?.some((u) => u.instagram_waiting + u.facebook_waiting > 0) ? 60_000 : false),
+  });
   const [viewing, setViewing] = useState<VpUpload | null>(null);
   const [renaming, setRenaming] = useState<VpUpload | null>(null);
   const [deleting, setDeleting] = useState<VpUpload | null>(null);
@@ -208,11 +223,15 @@ export function UploadsPanel({
         description="Video lists you upload are listed here with their rows."
         action={
           <Button variant="primary" onClick={onUpload}>
-            <Upload size={16} /> Upload Excel
+            <Upload size={16} /> Upload Videos
           </Button>
         }
       />
     );
+  const term = query.trim().toLowerCase();
+  const shown = data && term ? data.filter((u) => u.filename.toLowerCase().includes(term)) : data;
+  if (shown && shown.length === 0)
+    return <EmptyState icon={<FileSpreadsheet size={22} />} title="No matching uploads" description={`No video list file name contains "${query.trim()}".`} />;
 
   return (
     <>
@@ -228,7 +247,7 @@ export function UploadsPanel({
             </tr>
           </thead>
           <tbody>
-            {!data
+            {!shown
               ? Array.from({ length: 3 }, (_, i) => (
                   <tr key={i}>
                     <td colSpan={8} className="border-b border-line px-4 py-4">
@@ -236,11 +255,17 @@ export function UploadsPanel({
                     </td>
                   </tr>
                 ))
-              : data.map((upload) => (
+              : shown.map((upload) => (
                   <tr key={upload.id} className="hover:bg-slate-50">
-                    <td className="max-w-[280px] border-b border-line px-4 py-3" title={upload.filename}>
+                    <td className="max-w-[320px] border-b border-line px-4 py-3" title={upload.filename}>
                       <span className="block truncate font-medium text-ink">{upload.filename}</span>
                       <FileStatusText deletedAt={upload.file_deleted_at} />
+                      {metaUploadProgress(upload, metaQueue) && (
+                        <span className="mt-0.5 flex items-center gap-1 text-xs text-amber-700">
+                          <Clock3 size={12} className="shrink-0" />
+                          {metaUploadProgress(upload, metaQueue)}
+                        </span>
+                      )}
                     </td>
                     <td className="whitespace-nowrap border-b border-line px-4 py-3 text-slate-600">{formatDateTime(upload.created_at)}</td>
                     <td className="border-b border-line px-4 py-3 tabular-nums">{upload.total_rows}</td>

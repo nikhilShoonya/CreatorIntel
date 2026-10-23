@@ -15,7 +15,7 @@ from weakref import WeakValueDictionary
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 
 from app.agents.content_analysis_agent import (
     PENDING_PREFIX,
@@ -24,7 +24,7 @@ from app.agents.content_analysis_agent import (
     build_content_sample,
     resolve_display_values,
 )
-from app.agents.instagram_agent import InstagramCollector
+from app.agents.instagram_agent import META_WAIT, InstagramCollector
 from app.agents.metrics_agent import MetricsProcessor, MetricsResult
 from app.agents.platform_agent import PlatformResolver
 from app.agents.validation_agent import ResultValidator
@@ -33,6 +33,7 @@ from app.config.settings import Settings, get_settings
 from app.models.db import session_scope
 from app.models.entities import Creator, CreatorStatus, Upload, UploadItem, UploadStatus
 from app.schemas.platform import ChannelProfile, CollectionError
+from app.services import meta_budget
 from app.services.upload_service import upload_status_counts
 from app.utils.logging import log_event
 from app.utils.time import as_utc, utcnow
@@ -46,6 +47,8 @@ _ENRICHED_FIELDS = (
     "average_views_short", "average_views_short_count", "top_video_title", "top_video_url",
     "top_video_views", "engagement_rate", "engagement_rate_basis", "engagement_sample_count",
 )
+META_QUEUE_POLL_SECONDS = 5 * 60  # creators waiting for Meta's hourly limit are continued this often
+META_QUEUE_STARTUP_DELAY_SECONDS = 25
 AI_BACKLOG_INTERVAL_SECONDS = 15 * 60
 AI_BACKLOG_BATCH = 10
 _AI_PROVENANCE_KEYS = ("genre", "sub_genre", "language", "sentiment")
@@ -144,13 +147,14 @@ class EnrichmentOrchestrator:
         return [cid for cid, issues in rows if any(PENDING_PREFIX in str(i) for i in (issues or []))][:limit]
 
     @staticmethod
-    def _reusable_ai(creator_id: int, sample: dict) -> dict | None:
-        """Previous AI result, when the creator's content sample has not changed since it was produced."""
+    def _reusable_ai(creator_id: int, sample: dict, *, any_content: bool = False) -> dict | None:
+        """Previous AI result, when the creator's content sample has not changed since it was produced
+        (or regardless of the content with `any_content` - Refresh Profile never re-runs the AI)."""
         with session_scope() as db:
             creator = db.get(Creator, creator_id)
-            if creator is None or creator.analyzed_at is None or not creator.content_sample:
+            if creator is None or creator.analyzed_at is None:
                 return None
-            if creator.content_sample != sample:
+            if not any_content and (not creator.content_sample or creator.content_sample != sample):
                 return None
             return {
                 "values": {key: getattr(creator, key) for key in _AI_FIELDS},
@@ -164,6 +168,10 @@ class EnrichmentOrchestrator:
 
     def start_retry(self, creator_id: int) -> None:
         self._schedule(self._limited(self.enrich_creator(creator_id)), f"retry-{creator_id}")
+
+    def start_profile_refresh(self, creator_id: int) -> None:
+        """Re-fetch this creator's platform data only (the stored AI analysis is kept as it is)."""
+        self._schedule(self._limited(self.enrich_creator(creator_id, profile_only=True)), f"profile-{creator_id}")
 
     def start_reanalyze(self, creator_id: int) -> None:
         self._schedule(self._limited(self.reanalyze_creator(creator_id)), f"reanalyze-{creator_id}")
@@ -226,8 +234,11 @@ class EnrichmentOrchestrator:
             in_uploads = set(
                 db.scalars(select(UploadItem.creator_id).where(UploadItem.upload_id.in_(upload_ids)))
             ) if upload_ids else set()
-            orphan_ids = [
-                cid for cid in db.scalars(select(Creator.id).where(Creator.status.in_(CreatorStatus.ACTIVE)))
+            orphan_ids = [  # (creators waiting for Meta's hourly limit are continued by the Meta queue)
+                cid for cid in db.scalars(select(Creator.id).where(
+                    Creator.status.in_(CreatorStatus.ACTIVE),
+                    or_(Creator.error_message.is_(None), ~Creator.error_message.like(f"{META_WAIT}%")),
+                ))
                 if cid not in in_uploads
             ]
         for upload_id in upload_ids:
@@ -311,7 +322,8 @@ class EnrichmentOrchestrator:
         return self.youtube if platform == "youtube" else self.instagram
 
     async def enrich_creator(
-        self, creator_id: int, *, upload_id: str | None = None, fresh_after: datetime | None = None
+        self, creator_id: int, *, upload_id: str | None = None, fresh_after: datetime | None = None,
+        profile_only: bool = False,
     ) -> None:
         def claim() -> tuple[str, str] | None:
             with session_scope() as db:
@@ -337,7 +349,7 @@ class EnrichmentOrchestrator:
 
             ctx = {"upload_id": upload_id, "creator_id": creator_id, "platform": platform}
             try:
-                await self._run_pipeline(creator_id, platform, channel_url, ctx)
+                await self._run_pipeline(creator_id, platform, channel_url, ctx, profile_only=profile_only)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -349,7 +361,9 @@ class EnrichmentOrchestrator:
                     duration_s=f"{time.perf_counter() - started:.2f}",
                 )
 
-    async def _run_pipeline(self, creator_id: int, platform: str, channel_url: str, ctx: dict) -> None:
+    async def _run_pipeline(
+        self, creator_id: int, platform: str, channel_url: str, ctx: dict, *, profile_only: bool = False
+    ) -> None:
         parsed = self.resolver.resolve(channel_url)
         if not parsed.is_supported:
             await asyncio.to_thread(self._save_failure, creator_id, parsed.error or "Channel link is not valid", None)
@@ -360,6 +374,10 @@ class EnrichmentOrchestrator:
             profile = await self._collector_for(platform).collect(parsed)
         except CollectionError as exc:
             log_event(logger, logging.WARNING, "collect_failed", **ctx, code=exc.code, reason=exc.message)
+            if exc.code == CollectionError.RATE_LIMITED and platform == "instagram":
+                # Meta's hourly limit (or our budget for it): queued, not failed - stored data is kept
+                await asyncio.to_thread(self._save_meta_wait, creator_id, exc.message)
+                return
             await asyncio.to_thread(self._save_failure, creator_id, exc.message, exc.account_access)
             return
 
@@ -367,10 +385,14 @@ class EnrichmentOrchestrator:
         sample = build_content_sample(profile)
 
         # Same content as last time -> keep the previous AI result instead of spending Groq quota again.
-        reused = await asyncio.to_thread(self._reusable_ai, creator_id, sample)
+        # Refresh Profile keeps the stored AI result whatever the content (Re-analyze is the separate AI action).
+        reused = await asyncio.to_thread(self._reusable_ai, creator_id, sample, any_content=profile_only)
         if reused is not None:
             analysis = AnalysisOutcome(issues=reused["issues"])
             log_event(logger, logging.INFO, "stage_ai_reused", **ctx)
+        elif profile_only:
+            analysis = AnalysisOutcome(error="AI analysis not run by Refresh Profile - use Re-analyze")
+            log_event(logger, logging.INFO, "stage_ai_skipped", **ctx)
         else:
             log_event(logger, logging.INFO, "stage_ai_analysis", **ctx)
             analysis = await self.analyzer.analyze(sample, creator_id=creator_id)
@@ -488,6 +510,63 @@ class EnrichmentOrchestrator:
             creator.content_sample = None
             creator.data_fetched_at = utcnow()
             creator.analyzed_at = None
+
+    @staticmethod
+    def _save_meta_wait(creator_id: int, message: str) -> None:
+        """Pending - waiting for Meta's hourly limit; continued by the Meta queue. Nothing stored is changed."""
+        if not message.startswith(META_WAIT):
+            resume = meta_budget.resume_at()
+            when = f"; continues after {resume.astimezone():%H:%M}" if resume else ""
+            message = f"{META_WAIT} ({message.split(': ', 1)[-1]}{when})"
+        with session_scope() as db:
+            creator = db.get(Creator, creator_id)
+            if creator is not None:
+                creator.status = CreatorStatus.PENDING
+                creator.error_message = message
+
+    # ------------------------------------------------------------ Meta queue
+    def start_meta_queue(self, interval_seconds: float = META_QUEUE_POLL_SECONDS) -> None:
+        """Continue Instagram creators waiting for Meta's hourly limit, oldest first, within the Meta budget
+        (the queue is in the database, so it also continues after a restart)."""
+        self._schedule(self._meta_queue_loop(interval_seconds), "meta-queue-creators")
+
+    async def _meta_queue_loop(self, interval_seconds: float) -> None:
+        await asyncio.sleep(META_QUEUE_STARTUP_DELAY_SECONDS)
+        while True:
+            try:
+                while await self.process_meta_queue():
+                    pass
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("meta_queue_crashed")
+            await asyncio.sleep(interval_seconds)
+
+    async def process_meta_queue(self) -> int:
+        """Continue waiting creators as far as the Meta budget allows. Returns how many were picked up."""
+        available = meta_budget.available()
+        if available <= 0:
+            return 0
+        ids = await asyncio.to_thread(self._meta_waiting_creators, available)  # each needs at least one call
+        if not ids:
+            return 0
+        log_event(logger, logging.INFO, "meta_queue_continue", creators=len(ids), budget_left=available)
+        for creator_id in ids:  # one after another, oldest first: stops being useful once the budget is used
+            if meta_budget.available() <= 0:
+                break
+            async with self._semaphore:
+                await self.enrich_creator(creator_id)
+        return len(ids)
+
+    @staticmethod
+    def _meta_waiting_creators(limit: int) -> list[int]:
+        with session_scope() as db:
+            return list(db.scalars(
+                select(Creator.id)
+                .where(Creator.status == CreatorStatus.PENDING, Creator.error_message.like(f"{META_WAIT}%"))
+                .order_by(Creator.created_at, Creator.id)
+                .limit(limit)
+            ))
 
     # ----------------------------------------------------------------- reanalyze
     async def reanalyze_creator(self, creator_id: int) -> None:

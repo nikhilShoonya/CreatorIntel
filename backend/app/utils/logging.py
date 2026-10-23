@@ -11,6 +11,7 @@ _SECRET_PATTERNS = [
     re.compile(r"(?i)(authorization:\s*(?:bearer|oauth)\s+)([^\s\"']+)"),
     re.compile(r"sk-[A-Za-z0-9_\-]{10,}"),  # OpenAI-style keys
     re.compile(r"gsk_[A-Za-z0-9]{10,}"),  # Groq keys
+    re.compile(r"apify_api_[A-Za-z0-9_-]+"),  # Apify API tokens
     re.compile(r"AIza[0-9A-Za-z_\-]{20,}"),  # Google API keys
     re.compile(r"\b(?:EAA|IGAA)[0-9A-Za-z]{30,}"),  # Meta / Instagram access tokens
     re.compile(r"(postgres(?:ql)?(?:\+\w+)?://[^:/\s]+:)[^@\s]+(@)"),  # database passwords

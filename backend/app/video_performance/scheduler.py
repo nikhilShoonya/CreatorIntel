@@ -19,6 +19,7 @@ from app.config.settings import Settings
 from app.utils.logging import log_event
 from app.utils.time import utcnow
 from app.video_performance import repository as repo
+from app.video_performance.models import JobType
 from app.video_performance.timeutil import job_times, next_run_utc, slot_start_utc
 from app.video_performance.tracker import VideoTracker
 
@@ -36,7 +37,12 @@ class VideoTrackingScheduler:
         self.tracker = tracker
         self.settings = settings
         self._task: asyncio.Task | None = None
-        self.times = job_times(settings)
+        # The daily metrics refresh of every tracked video is off unless VIDEO_TRACKING_AUTO_REFRESH=true:
+        # stored numbers are kept and videos are refreshed on demand (per video, or "Run now" on the dashboard).
+        self.times = {
+            job: at for job, at in job_times(settings).items()
+            if job != JobType.METRICS_REFRESH or settings.video_tracking_auto_refresh
+        }
         self._last_cleanup: datetime | None = None
 
     @property
@@ -44,8 +50,9 @@ class VideoTrackingScheduler:
         return self.settings.video_tracking_scheduler_enabled
 
     def next_runs(self) -> dict[str, datetime | None]:
+        """Next scheduled start per job (None = not scheduled: scheduler off, or the job runs on demand only)."""
         if not self.enabled:
-            return {job: None for job in self.times}
+            return {}
         return {job: next_run_utc(at) for job, at in self.times.items()}
 
     def start(self) -> None:

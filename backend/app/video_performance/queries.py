@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
-from sqlalchemy import case, func, or_, select, union_all
+from sqlalchemy import and_, case, func, or_, select, union_all
 
 from app.config.settings import get_settings
 from app.utils.time import as_utc, utcnow
@@ -21,6 +21,7 @@ from app.video_performance.models import (
     VtVideo,
     VtViewSnapshot,
 )
+from app.video_performance.platforms import META_WAIT
 from app.video_performance.repository import STALE_COUNT_WINDOW, is_outdated_count, read_scope
 from app.video_performance.schemas import (
     CreatorOut,
@@ -148,7 +149,12 @@ def history(video_id: int) -> list[SnapshotOut]:
         ).all()
     out, previous = [], None
     kept: list[tuple[datetime, int | None]] = []
+    basis = None
     for snap in snaps:
+        current_basis = (snap.metrics_source, snap.view_metric)
+        if current_basis != basis:
+            kept, previous = [], None
+        basis = current_basis
         # An older, lower count returned by the API shortly after a higher one (saved before this was filtered).
         outdated = is_outdated_count(snap.views, kept, as_utc(snap.captured_at))
         change = snap.views - previous if not outdated and snap.views is not None and previous is not None else None
@@ -156,6 +162,7 @@ def history(video_id: int) -> list[SnapshotOut]:
             SnapshotOut(
                 captured_at=snap.captured_at, views=snap.views, likes=snap.likes, comments=snap.comments,
                 engagement_rate=snap.engagement_rate, views_change=change, outdated=outdated,
+                metrics_source=snap.metrics_source, view_metric=snap.view_metric, source_metrics=snap.source_metrics,
             )
         )
         if not outdated:
@@ -192,16 +199,35 @@ def _upload_out(upload: VtUpload) -> UploadOut:
     return out
 
 
+def _meta_progress(db, outs: list[UploadOut]) -> list[UploadOut]:
+    """Per upload: Instagram / Facebook videos it added and how many still wait for Meta's hourly limit
+    (one grouped query for all uploads)."""
+    if not outs:
+        return outs
+    waiting = case((and_(VtVideo.status == VideoStatus.PENDING, VtVideo.status_reason.like(f"{META_WAIT}%")), 1), else_=0)
+    rows = db.execute(
+        select(VtVideo.upload_id, VtVideo.platform, func.count(), func.sum(waiting))
+        .where(VtVideo.upload_id.in_([o.id for o in outs]), VtVideo.platform.in_(("instagram", "facebook")))
+        .group_by(VtVideo.upload_id, VtVideo.platform)
+    ).all()
+    by_id = {o.id: o for o in outs}
+    for upload_id, platform, total, waiting_count in rows:
+        setattr(by_id[upload_id], f"{platform}_total", int(total))
+        setattr(by_id[upload_id], f"{platform}_waiting", int(waiting_count or 0))
+    return outs
+
+
 def uploads(limit: int | None = None) -> list[UploadOut]:
     """Uploads, newest first (all of them by default - uploads are never hidden from the website)."""
     with read_scope() as db:
-        return [_upload_out(u) for u in db.scalars(select(VtUpload).order_by(VtUpload.created_at.desc()).limit(limit))]
+        outs = [_upload_out(u) for u in db.scalars(select(VtUpload).order_by(VtUpload.created_at.desc()).limit(limit))]
+        return _meta_progress(db, outs)
 
 
 def upload(upload_id: str) -> UploadOut | None:
     with read_scope() as db:
         found = db.get(VtUpload, upload_id)
-        return _upload_out(found) if found else None
+        return _meta_progress(db, [_upload_out(found)])[0] if found else None
 
 
 def upload_video_ids(upload_id: str) -> list[int] | None:
@@ -214,14 +240,14 @@ def upload_video_ids(upload_id: str) -> list[int] | None:
         if db.get(VtUpload, upload_id) is None:
             return None
         rows = db.execute(
-            select(VtUploadRow.video_link, VtUploadRow.message)
+            select(VtUploadRow.video_link, VtUploadRow.message, VtUploadRow.platform)
             .where(VtUploadRow.upload_id == upload_id, VtUploadRow.status != "invalid")
             .order_by(VtUploadRow.row_number)
         ).all()
         keys: list[tuple[str, str]] = []
-        for link, message in rows:
+        for link, message, platform in rows:
             # A Facebook share link is stored as uploaded; its note records the real video link it resolved to.
-            parsed = parse_video_link(resolved_link_from_note(message) or link)
+            parsed = parse_video_link(resolved_link_from_note(message) or link, instagram_reel_hint=platform == "instagram")
             if parsed.ok and (parsed.platform, parsed.identifier) not in keys:
                 keys.append((parsed.platform, parsed.identifier))
         found: dict[tuple[str, str], int] = {}
@@ -345,7 +371,7 @@ class Trend:
 def _trend_snapshots(start: datetime) -> list:
     """Each video's latest check before `start` (where the trend starts from) plus every check since, oldest first."""
     S = VtViewSnapshot
-    columns = (S.video_id, S.captured_at, S.views, S.likes, S.comments)
+    columns = (S.video_id, S.captured_at, S.views, S.likes, S.comments, S.metrics_source, S.view_metric)
     latest = (
         select(S.video_id, func.max(S.captured_at).label("at"))
         .where(S.captured_at < start, S.views.is_not(None))
@@ -365,12 +391,13 @@ def _without_outdated_counts(snapshots: list) -> list:
     kept = []
     for row in snapshots:
         at = as_utc(row[1])
-        seen = [(t, n) for t, n in recent.get(row[0], []) if at - STALE_COUNT_WINDOW <= t]
+        identity = (row[0], *row[5:])
+        seen = [(t, n) for t, n in recent.get(identity, []) if at - STALE_COUNT_WINDOW <= t]
         if is_outdated_count(row[2], seen, at):
-            recent[row[0]] = seen
+            recent[identity] = seen
             continue
         seen.append((at, row[2]))
-        recent[row[0]] = seen
+        recent[identity] = seen
         kept.append(row)
     return kept
 
@@ -396,11 +423,11 @@ def trend(days: int) -> Trend:
 
     state: dict[int, tuple] = {}  # each video's latest (views, likes, comments) so far
     per_day: dict[date, dict[int, tuple]] = {}  # latest check of each video on each day of the range
-    for video_id, captured_at, views, likes, comments in _without_outdated_counts(snapshots):
+    for video_id, captured_at, views, likes, comments, source, metric in _without_outdated_counts(snapshots):
         if as_utc(captured_at) < start:
-            state[video_id] = (views, likes, comments)
+            state[video_id] = (views, likes, comments, (source, metric))
         else:
-            per_day.setdefault(local(captured_at), {})[video_id] = (views, likes, comments)
+            per_day.setdefault(local(captured_at), {})[video_id] = (views, likes, comments, (source, metric))
     created = [(local(v.created_at), v.platform) for v in videos]
     discovered: dict[date, int] = {}
     for v in videos:
@@ -409,6 +436,8 @@ def trend(days: int) -> Trend:
             discovered[day] = discovered.get(day, 0) + 1
 
     baseline = {video_id: values[0] for video_id, values in state.items()}
+    baseline_basis = {video_id: values[3] for video_id, values in state.items()}
+    changed_basis = set()
     gains: dict[int, list[int | None]] = {}
     points: list[TrendPoint] = []
     for index, day in enumerate(day_list):
@@ -416,14 +445,16 @@ def trend(days: int) -> Trend:
         known = set(state)
         gained = 0
         for video_id, values in checks.items():
-            if video_id in known:  # the first ever check of a video is not a gain
+            if video_id in known and values[3] != state[video_id][3]:
+                changed_basis.add(video_id)
+            if video_id in known and values[3] == state[video_id][3]:
                 delta = values[0] - state[video_id][0]
                 gains.setdefault(video_id, [None] * days)[index] = delta
                 gained += delta
             state[video_id] = values
         for video_id in known - checks.keys():  # tracked but not checked that day
             gains.setdefault(video_id, [None] * days)[index] = 0
-        engaged = [(likes + comments, views) for views, likes, comments in state.values()
+        engaged = [(likes + comments, views) for views, likes, comments, _basis in state.values()
                    if views and likes is not None and comments is not None]
         engaged_views = sum(views for _, views in engaged)
         existing = [platform for created_day, platform in created if created_day <= day]
@@ -442,8 +473,9 @@ def trend(days: int) -> Trend:
             )
         )
 
-    base_total = sum(baseline.values())
-    now_total = sum(state[video_id][0] for video_id in baseline)
+    comparable_ids = [vid for vid in baseline if vid not in changed_basis and state[vid][3] == baseline_basis[vid]]
+    base_total = sum(baseline[vid] for vid in comparable_ids)
+    now_total = sum(state[video_id][0] for video_id in comparable_ids)
     return Trend(
         points=points,
         videos_added=sum(1 for created_day, _ in created if created_day >= day_list[0]),

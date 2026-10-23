@@ -14,6 +14,10 @@ export interface VpVideo {
   creator_name: string | null;
   creator_id: number | null;
   owner_username: string | null;
+  instagram_media_kind?: "reel" | "post" | "tv" | null;
+  metrics_source?: string | null;
+  view_metric?: string | null;
+  source_metrics?: Record<string, string | number | null> | null;
   source: "upload" | "manual" | "discovered";
   current_views: number | null;
   previous_views: number | null;
@@ -44,6 +48,9 @@ export interface VpVideoList {
 }
 
 export interface VpSnapshot {
+  metrics_source?: string | null;
+  view_metric?: string | null;
+  source_metrics?: Record<string, string | number | null> | null;
   captured_at: string;
   views: number | null;
   likes: number | null;
@@ -98,6 +105,11 @@ export interface VpUpload {
   file_delete_after: string | null;
   /** The original uploaded file can still be downloaded. */
   file_available: boolean;
+  /** Instagram / Facebook videos this file added, and how many still wait for Meta's hourly limit. */
+  instagram_total: number;
+  instagram_waiting: number;
+  facebook_total: number;
+  facebook_waiting: number;
 }
 
 export interface VpUploadResult {

@@ -40,11 +40,27 @@ def history(monkeypatch):
     return runs
 
 
-def scheduler(tracker):
+def scheduler(tracker, auto_refresh: bool = True):
+    """The scheduling rules below apply to the daily metrics refresh only when it is switched on
+    (VIDEO_TRACKING_AUTO_REFRESH=true); it is off by default."""
     cfg = get_settings().model_copy(update={"video_tracking_timezone": "Asia/Kolkata",
                                             "video_tracking_discovery_time": "06:00",
-                                            "video_tracking_refresh_time": "06:30"})
+                                            "video_tracking_refresh_time": "06:30",
+                                            "video_tracking_auto_refresh": auto_refresh,
+                                            "video_tracking_scheduler_enabled": True})  # the loop is never started here
     return sched.VideoTrackingScheduler(tracker, cfg)
+
+
+def test_automatic_metrics_refresh_is_off_by_default(history):
+    assert get_settings().video_tracking_auto_refresh is False
+    tracker = FakeTracker()
+    s = scheduler(tracker, auto_refresh=False)
+    history["metrics_refresh"]["done"] = [ist(1, 6, 31)]  # last refreshed a week ago
+    history["creator_discovery"]["done"] = [ist(8, 6, 1)]
+    assert asyncio.run(s.tick(ist(8, 9, 0))) == []  # never started automatically, however old the numbers
+    assert "metrics_refresh" not in s.next_runs() and "creator_discovery" in s.next_runs()
+    history["creator_discovery"]["done"] = []
+    assert asyncio.run(s.tick(ist(8, 9, 0))) == ["creator_discovery"]  # the other daily job is unchanged
 
 
 def test_slot_start():

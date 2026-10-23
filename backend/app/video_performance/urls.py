@@ -22,6 +22,7 @@ _YT_VIDEO_ID = re.compile(r"^[A-Za-z0-9_\-]{11}$")
 _IG_SHORTCODE = re.compile(r"^[A-Za-z0-9_\-]{5,40}$")
 _IG_USERNAME = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 _IG_MEDIA_PATHS = {"reel", "reels", "p", "tv"}
+_IG_PROFILE_TABS = {"reels", "tagged"}  # instagram.com/<user>/reels/ and /<user>/tagged/ are profile pages
 _IG_RESERVED = {"explore", "accounts", "direct", "stories", "about", "legal", "developer", "web", *_IG_MEDIA_PATHS}
 
 
@@ -32,6 +33,7 @@ class ParsedVideo:
     url: str | None = None  # canonical URL
     owner_username: str | None = None  # Instagram owner when present in the link
     error: str | None = None
+    instagram_media_kind: str | None = None  # reel | post | tv; never inferred from a shortcode alone
 
     @property
     def ok(self) -> bool:
@@ -42,10 +44,12 @@ def _invalid(message: str) -> ParsedVideo:
     return ParsedVideo(platform=None, error=message)
 
 
-def parse_video_link(raw: object) -> ParsedVideo:
+def parse_video_link(raw: object, *, instagram_reel_hint: bool = False) -> ParsedVideo:
     text = str(raw or "").strip().strip("<>\"'")
     if not text or text.lower() in {"nan", "none", "null"}:
         return _invalid("Video link is empty")
+    if instagram_reel_hint and _IG_SHORTCODE.fullmatch(text):
+        return _instagram(["reel", text])
     if len(text) > 2048 or any(ch.isspace() for ch in text):
         return _invalid("Video link is not a valid URL")
     if "://" not in text:
@@ -57,6 +61,13 @@ def parse_video_link(raw: object) -> ParsedVideo:
     if parts.scheme.lower() not in ("http", "https"):
         return _invalid("Only http(s) links are supported")
     host = (parts.hostname or "").lower().rstrip(".")
+    if parts.username or parts.password:
+        return _invalid("Video link must not contain URL credentials")
+    try:
+        if parts.port not in (None, 80, 443):
+            return _invalid("Video link uses an unsupported port")
+    except ValueError:
+        return _invalid("Video link is not a valid URL")
     segments = [unquote(s) for s in parts.path.split("/") if s]
 
     if host in _YT_SHORT_HOSTS:
@@ -88,15 +99,20 @@ def _instagram(segments: list[str]) -> ParsedVideo:
     owner = None
     if len(segments) >= 2 and segments[0].lower() in _IG_MEDIA_PATHS:
         code = segments[1]
+        kind = segments[0].lower()
     elif len(segments) >= 3 and segments[1].lower() in _IG_MEDIA_PATHS and segments[0].lower() not in _IG_RESERVED:
         owner, code = segments[0].lower(), segments[2]  # instagram.com/<username>/reel/<code>/
+        kind = segments[1].lower()
     else:
         return _invalid("This Instagram link is not a reel/post link (expected instagram.com/reel/<code>/)")
     if not _IG_SHORTCODE.match(code):
         return _invalid("Instagram reel code in the link is not valid")
-    if owner is not None and not _IG_USERNAME.match(owner):
-        owner = None
-    return ParsedVideo("instagram", code, f"https://www.instagram.com/reel/{code}/", owner_username=owner)
+    owner = parse_instagram_handle(owner) if owner else None
+    expected = 3 if owner else 2
+    if len(segments) != expected:
+        return _invalid("Instagram link contains an unexpected path after the media code")
+    return ParsedVideo("instagram", code, f"https://www.instagram.com/reel/{code}/", owner_username=owner,
+                       instagram_media_kind="post" if kind == "p" else "tv" if kind == "tv" else "reel")
 
 
 def _facebook(segments: list[str], query: str) -> ParsedVideo:
@@ -131,15 +147,28 @@ def instagram_shortcode_from_permalink(permalink: str | None) -> str | None:
 def parse_instagram_handle(value: object) -> str | None:
     """'@abc', 'abc', or an instagram.com/abc profile URL -> 'abc'. Anything else -> None."""
     text = str(value or "").strip()
-    if not text:
+    if not text or text.lower() in {"nan", "none", "null"}:
         return None
-    if "instagram.com" in text.lower() or "instagr.am" in text.lower():
+    if "/" in text or ":" in text or "instagram.com" in text.lower() or "instagr.am" in text.lower():
         url = text if "://" in text else "https://" + text
-        segments = [s for s in urlsplit(url).path.split("/") if s]
-        if not segments or segments[0].lower() in _IG_RESERVED:
+        try:
+            parts = urlsplit(url)
+            if (parts.scheme.lower() not in ("http", "https") or parts.username or parts.password
+                    or (parts.hostname or "").lower().rstrip(".") not in _IG_HOSTS
+                    or parts.port not in (None, 80, 443)):
+                return None
+        except ValueError:
+            return None
+        segments = [unquote(s) for s in parts.path.split("/") if s]
+        # Only a profile URL (optionally on one of its tabs, e.g. /<user>/reels/ as copied from a profile's Reels
+        # tab) or an explicitly username-bearing media URL carries an owner.
+        if not (len(segments) == 1
+                or (len(segments) == 2 and segments[1].lower() in _IG_PROFILE_TABS)
+                or (len(segments) == 3 and segments[1].lower() in _IG_MEDIA_PATHS)):
             return None
         text = segments[0]
-    text = text.lstrip("@").lower()
-    if _IG_USERNAME.match(text) and text.strip(".") == text:
+    text = text.removeprefix("@").lower()
+    if (_IG_USERNAME.fullmatch(text) and text.strip(".") == text and ".." not in text
+            and text not in _IG_RESERVED):
         return text
     return None

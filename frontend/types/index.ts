@@ -112,6 +112,20 @@ export interface GrowthPoint {
   added: number; // added on this day
 }
 
+/** Meta (Instagram / Facebook) hourly call budget and the work waiting for it. */
+export interface MetaQueue {
+  calls_last_hour: number;
+  hourly_budget: number;
+  reported_percent: number | null;
+  stop_percent: number;
+  paused: boolean;
+  reason: string | null;
+  resume_at: string | null;
+  waiting_videos: number;
+  waiting_instagram_videos: number;
+  waiting_creators: number;
+}
+
 export interface Facets {
   platforms: string[];
   genres: string[];
@@ -187,10 +201,20 @@ export interface YouTubeQuota {
   note: string;
 }
 
+/** Meta-reported percentages of its rolling one-hour limit (null = not reported). */
+export interface MetaUsageMetrics {
+  call_count: number | null;
+  total_cputime: number | null;
+  total_time: number | null;
+}
+
 export interface InstagramUsage {
   calls_today: number;
   facebook_calls_today: number;
   percent: number;
+  metrics: MetaUsageMetrics;
+  safety_stop_percent: number;
+  resume_at: string | null;
   observed_at: string | null;
   stale: boolean;
   regain_access_minutes: number | null;
@@ -226,6 +250,21 @@ export interface ApiUsage {
   youtube: YouTubeQuota;
   instagram: InstagramUsage;
   groq: GroqUsage;
+}
+
+export interface ApifyUsage {
+  enabled: boolean;
+  configured: boolean;
+  actor_id: string;
+  month: string;
+  limit: number;
+  used_units: number;
+  remaining: number;
+  reserved_units: number;
+  returned_items: number;
+  active_runs: number;
+  note: string;
+  recent_runs: Array<{ id: string; remote_run_id: string | null; status: string; started_at: string; finished_at: string | null; message: string | null }>;
 }
 
 export interface InstagramTokenStatus {

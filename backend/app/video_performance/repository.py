@@ -22,10 +22,11 @@ from app.video_performance.models import (
     VtVideo,
     VtViewSnapshot,
 )
-from app.video_performance.platforms import ChannelInfo, DiscoveredVideo, PlatformError, VideoMetrics
+from app.services import meta_budget
+from app.video_performance.platforms import META_WAIT, ChannelInfo, DiscoveredVideo, PlatformError, VideoMetrics
 from app.video_performance.sentiment import SentimentResult
 from app.video_performance.timeutil import local_day_start_utc, tracking_tz
-from app.video_performance.urls import ParsedVideo
+from app.video_performance.urls import ParsedVideo, parse_instagram_handle, parse_video_link
 
 
 logger = logging.getLogger("creatorintel.video_performance.repository")
@@ -54,13 +55,97 @@ def engagement(views: int | None, likes: int | None, comments: int | None) -> fl
 
 
 # ------------------------------------------------------------------ processing
+def instagram_owner_candidates() -> list[str]:
+    """Instagram Professional accounts already known to the app, most useful first - searched for reels whose
+    owner is unknown: owners of reels that were read successfully (by number of reels), creators tracked in
+    Video Performance, then Instagram creators analysed in Creator Analytics."""
+    from app.models.entities import Creator, CreatorStatus
+
+    with read_scope() as db:
+        owners = db.execute(
+            select(VtVideo.owner_username, func.count())
+            .where(VtVideo.platform == "instagram", VtVideo.owner_username.is_not(None), VtVideo.current_views.is_not(None))
+            .group_by(VtVideo.owner_username)
+            .order_by(func.count().desc())
+        ).all()
+        tracked = db.scalars(select(VtCreator.username).where(
+            VtCreator.platform == "instagram", VtCreator.username.is_not(None),
+            VtCreator.status == CreatorTrackingStatus.ACTIVE,
+        ).order_by(VtCreator.id))
+        analysed = db.scalars(
+            select(Creator.normalized_identifier).where(
+                Creator.platform == "instagram", Creator.status.in_((CreatorStatus.COMPLETED, CreatorStatus.PARTIAL))
+            ).order_by(Creator.id)
+        )
+        names = [o for o, _ in owners] + list(tracked) + list(analysed)
+    return list(dict.fromkeys(handle for n in names if (handle := parse_instagram_handle(n))))
+
+
+def _has_metrics(video: VtVideo) -> bool:
+    return any(value is not None for value in (video.current_views, video.likes, video.comments))
+
+
+def _owner_verified(db: Session, video: VtVideo) -> bool:
+    # An exact media match can have no available counts. Its saved snapshot still proves retrieval.
+    return _has_metrics(video) or bool(db.scalar(select(exists().where(VtViewSnapshot.video_id == video.id))))
+
+
+def _owner_metadata(db: Session, videos: list[VtVideo]) -> dict[int, dict[str, str]]:
+    """Only exact Reel associations are trusted; display names and other upload rows are not owners."""
+    from app.video_performance.models import VtUploadRow
+
+    instagram = [v for v in videos if v.platform == "instagram"]
+    by_code = {v.video_identifier: v for v in instagram}
+    sources: dict[int, dict[str, str]] = {v.id: {} for v in instagram}
+    creator_ids = {v.creator_id for v in instagram if v.creator_id is not None}
+    creators = {c.id: c for c in db.scalars(select(VtCreator).where(VtCreator.id.in_(creator_ids)))}
+    for video in instagram:
+        parsed = parse_video_link(video.video_url)
+        source_owner = parsed.owner_username if parsed.platform == "instagram" and parsed.identifier == video.video_identifier else None
+        values = {"stored owner": video.owner_username, "source URL": source_owner}
+        creator = creators.get(video.creator_id)
+        if creator is not None and creator.platform == "instagram":
+            values["linked creator"] = (parse_instagram_handle(creator.username) or parse_instagram_handle(creator.channel_url)
+                                        or parse_instagram_handle(creator.normalized_identifier))
+        if (video.creator_name or "").startswith("@") or "/" in (video.creator_name or ""):
+            values["creator handle"] = video.creator_name
+        sources[video.id] = {name: handle for name, value in values.items() if (handle := parse_instagram_handle(value))}
+    codes = list(by_code)
+    for start in range(0, len(codes), 100):
+        rows = db.scalars(select(VtUploadRow).where(
+            VtUploadRow.platform == "instagram", VtUploadRow.username.is_not(None),
+            VtUploadRow.status.in_(("added", "already_tracked", "duplicate")),
+            or_(*(VtUploadRow.video_link.contains(code, autoescape=True) for code in codes[start:start + 100])),
+        ).order_by(VtUploadRow.id))
+        for row in rows:
+            parsed = parse_video_link(row.video_link, instagram_reel_hint=row.platform == "instagram")
+            video = by_code.get(parsed.identifier) if parsed.platform == "instagram" else None
+            handle = parse_instagram_handle(row.username)
+            if video is not None and handle and not (row.message or "").startswith("Owner metadata superseded by explicit edit;"):
+                sources[video.id][f"upload {row.upload_id} row {row.row_number}"] = handle
+    return sources
+
+
 def claim_videos(video_ids: list[int]) -> list[dict]:
     """Mark videos Processing (paused ones stay Paused) and return what the fetch step needs."""
     with session_scope() as db:
         videos = db.scalars(select(VtVideo).where(VtVideo.id.in_(video_ids))).all()
         analysed = set(db.scalars(select(VtSentiment.video_id).where(VtSentiment.video_id.in_(video_ids))))
+        retrieved = set(db.scalars(select(VtViewSnapshot.video_id).where(VtViewSnapshot.video_id.in_(video_ids)).distinct()))
+        metadata = _owner_metadata(db, videos)
         rows = []
         for video in videos:
+            sources = metadata.get(video.id, {})
+            stored = parse_instagram_handle(video.owner_username)
+            verified = bool(stored and (_has_metrics(video) or video.id in retrieved))
+            conflict = len(set(sources.values())) > 1
+            diagnostic = None
+            if conflict:
+                diagnostic = "Conflicting Instagram owner metadata: " + ", ".join(f"{source}=@{name}" for source, name in sources.items())
+                log_event(logger, logging.WARNING, "vt_owner_metadata_conflict", video_id=video.id, sources=diagnostic)
+            owner = stored if verified else (next(iter(sources.values()), None) if not conflict else None)
+            # continued by the Meta queue: it is waiting for Meta, so Meta (not a new Apify run) checks it
+            meta_queue = video.status == VideoStatus.PENDING and (video.status_reason or "").startswith(META_WAIT)
             if video.status != VideoStatus.PAUSED:
                 video.status = VideoStatus.PROCESSING
             rows.append(
@@ -68,8 +153,14 @@ def claim_videos(video_ids: list[int]) -> list[dict]:
                     "id": video.id,
                     "platform": video.platform,
                     "identifier": video.video_identifier,
-                    "owner_username": video.owner_username,
+                    "instagram_media_kind": video.instagram_media_kind,
+                    "video_url": video.video_url,
+                    "owner_username": owner if video.platform == "instagram" else video.owner_username,
+                    "owner_verified": verified,
+                    "owner_conflict": diagnostic if conflict and not verified else None,
+                    "owner_warning": diagnostic if verified else None,
                     "needs_sentiment": video.id not in analysed,
+                    "meta_queue": meta_queue,
                     # metrics were fetched successfully before (a later "not found" means the video went down)
                     "seen": video.current_views is not None or video.likes is not None,
                 }
@@ -142,40 +233,65 @@ def repair_outdated_counts() -> int:
 
 
 def repair_temporary_failures() -> list[int]:
-    """Videos marked Failed only because a check hit a rate limit / quota while they already had good numbers
-    (before such failures were treated as temporary): back to Tracking, "last checked" = last successful check.
-    Returns their ids so they can be checked again."""
+    """Startup repair of videos left by older versions after a rate limit:
+    * Instagram / Facebook ones (Failed, or Tracking with a "Latest check failed" note) join the Meta queue:
+      Pending - waiting for Meta's hourly limit, stored numbers kept;
+    * YouTube ones that were Failed by the daily quota while they had good numbers go back to Tracking.
+    Returns the videos now waiting in the Meta queue."""
+    rate_limited = and_(
+        or_(VtVideo.status_reason.like("%rate limit reached%"), VtVideo.status_reason.like("%quota exceeded%")),
+        # Apify failures are never moved into Meta's queue (that would start new billable Apify runs on its own).
+        ~VtVideo.status_reason.like("%Apify%"),
+    )
     with session_scope() as db:
         videos = db.scalars(
             select(VtVideo).where(
-                VtVideo.status == VideoStatus.FAILED,
-                VtVideo.current_views.is_not(None),
-                or_(VtVideo.status_reason.like("%rate limit reached%"), VtVideo.status_reason.like("%quota exceeded%")),
+                VtVideo.status != VideoStatus.PAUSED,
+                or_(
+                    (VtVideo.status == VideoStatus.FAILED) & rate_limited,
+                    VtVideo.status_reason.like(f"Latest check failed%{RETRY_NOTE}"),
+                ),
             )
         ).all()
+        repaired = 0
         for video in videos:
             last_ok = db.scalar(select(func.max(VtViewSnapshot.captured_at)).where(VtViewSnapshot.video_id == video.id))
             message = (video.status_reason or "").split(": ", 1)[-1]  # drop the "@owner: " prefix
-            video.status = VideoStatus.TRACKING
-            video.last_checked_at = last_ok or video.last_checked_at
-            video.status_reason = _temporary_note(PlatformError(PlatformError.RATE_LIMITED, message), last_ok)
-        repaired = [v.id for v in videos]
-        # plus videos still waiting for their automatic re-check (e.g. the backend restarted before it ran)
-        waiting = list(db.scalars(
-            select(VtVideo.id).where(VtVideo.status != VideoStatus.PAUSED,
-                                     VtVideo.status_reason.like(f"Latest check failed%{RETRY_NOTE}"))
-        ))
+            message = message.removeprefix("Latest check failed (").split(") - showing", 1)[0]
+            error = PlatformError(PlatformError.RATE_LIMITED, message)
+            if video.platform in META_PLATFORMS:
+                video.status = VideoStatus.PENDING
+                video.status_reason = meta_wait_note(error, last_ok if video.current_views is not None else None)
+            elif video.current_views is not None and video.status == VideoStatus.FAILED:
+                video.status = VideoStatus.TRACKING
+                video.status_reason = _temporary_note(error, last_ok)
+            else:
+                continue
+            if video.current_views is not None:
+                video.last_checked_at = last_ok or video.last_checked_at
+            repaired += 1
     if repaired:
-        log_event(logger, logging.INFO, "vt_temporary_failures_repaired", videos=len(repaired))
-    return list(dict.fromkeys(repaired + waiting))
+        log_event(logger, logging.INFO, "vt_temporary_failures_repaired", videos=repaired)
+    return meta_waiting_ids()
 
 
-def _previous_day_views(db: Session, video_id: int, now: datetime) -> int | None:
+def meta_waiting_ids(limit: int | None = None) -> list[int]:
+    """Videos waiting for Meta's hourly limit, oldest first."""
+    with read_scope() as db:
+        return list(db.scalars(
+            select(VtVideo.id)
+            .where(VtVideo.status == VideoStatus.PENDING, VtVideo.status_reason.like(f"{META_WAIT}%"))
+            .order_by(VtVideo.created_at, VtVideo.id)
+            .limit(limit)
+        ))
+
+
+def _previous_day_views(db: Session, video_id: int, now: datetime, comparable: tuple = ()) -> int | None:
     """Views of the latest check before today (ignoring an outdated lower count taken shortly before it)."""
     day_start = local_day_start_utc(now)
     last = db.execute(
         select(VtViewSnapshot.captured_at, VtViewSnapshot.views)
-        .where(VtViewSnapshot.video_id == video_id, VtViewSnapshot.captured_at < day_start, VtViewSnapshot.views.is_not(None))
+        .where(VtViewSnapshot.video_id == video_id, VtViewSnapshot.captured_at < day_start, VtViewSnapshot.views.is_not(None), *comparable)
         .order_by(VtViewSnapshot.captured_at.desc())
         .limit(1)
     ).first()
@@ -186,6 +302,7 @@ def _previous_day_views(db: Session, video_id: int, now: datetime) -> int | None
             VtViewSnapshot.video_id == video_id,
             VtViewSnapshot.captured_at >= as_utc(last.captured_at) - STALE_COUNT_WINDOW,
             VtViewSnapshot.captured_at < day_start,
+            *comparable,
         )
     )
 
@@ -197,12 +314,41 @@ def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
         video = db.get(VtVideo, video_id)
         if video is None:
             return False
-        previous = _previous_day_views(db, video_id, now)
+        if metrics.source_run_id:
+            saved = db.scalar(select(VtViewSnapshot).where(
+                VtViewSnapshot.video_id == video_id, VtViewSnapshot.source_run_id == metrics.source_run_id,
+            ))
+            if saved:
+                if video.status == VideoStatus.PROCESSING:
+                    partial = saved.views is None or (saved.metrics_source == "apify_instagram_reel"
+                                                      and (saved.likes is None or saved.comments is None))
+                    video.status = VideoStatus.PARTIAL if partial else VideoStatus.TRACKING
+                return True  # replay must not duplicate a snapshot or leave the claimed row Processing
+        if video.platform == "instagram" and metrics.owner_username:
+            owner = parse_instagram_handle(metrics.owner_username)
+            if owner is None:
+                raise Conflict("Instagram metrics did not contain a valid owner username")
+            previous_owner = parse_instagram_handle(video.owner_username)
+            if previous_owner and previous_owner != owner:
+                verified = _owner_verified(db, video)
+                log_event(logger, logging.WARNING, "vt_api_owner_conflict", video_id=video.id,
+                          stored_owner=previous_owner, matched_owner=owner, verified=verified)
+                if verified:
+                    raise Conflict("Instagram API owner conflicts with the verified stored owner; stored metrics retained")
+                video.creator_id = None
+            metrics.owner_username = owner
+        comparable = ()
+        if metrics.metrics_source == "apify_instagram_reel":
+            comparable = (VtViewSnapshot.metrics_source == metrics.metrics_source,
+                          VtViewSnapshot.view_metric == metrics.view_metric)
+        elif video.metrics_source == "apify_instagram_reel":
+            comparable = (VtViewSnapshot.metrics_source.is_(None),)
+        previous = _previous_day_views(db, video_id, now, comparable)
         recent = db.execute(
             select(VtViewSnapshot.captured_at, VtViewSnapshot.views, VtViewSnapshot.likes, VtViewSnapshot.comments,
                    VtViewSnapshot.engagement_rate)
             .where(VtViewSnapshot.video_id == video_id, VtViewSnapshot.captured_at >= now - STALE_COUNT_WINDOW,
-                   VtViewSnapshot.views.is_not(None))
+                   VtViewSnapshot.views.is_not(None), *comparable)
             .order_by(VtViewSnapshot.views.desc(), VtViewSnapshot.captured_at.desc())
         ).all()
         if is_outdated_count(metrics.views, [(r.captured_at, r.views) for r in recent], now):
@@ -221,6 +367,8 @@ def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
             VtViewSnapshot(
                 video_id=video_id, captured_at=now, views=metrics.views, likes=metrics.likes,
                 comments=metrics.comments, engagement_rate=rate,
+                metrics_source=metrics.metrics_source, view_metric=metrics.view_metric,
+                source_metrics=metrics.source_metrics, source_run_id=metrics.source_run_id,
             )
         )
         video.title = metrics.title or video.title
@@ -232,14 +380,32 @@ def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
             video.creator_name = metrics.channel_title or (f"@{metrics.owner_username}" if metrics.owner_username else None)
         _link_creator(db, video)
 
-        _apply_counts(video, metrics.views, metrics.likes, metrics.comments, rate, previous)
+        # A value the API did not return this time never replaces a stored one (the snapshot above keeps
+        # exactly what was returned).
+        def kept(new, old):
+            return new if new is not None else old
+
+        _apply_counts(video, kept(metrics.views, video.current_views), kept(metrics.likes, video.likes),
+                      kept(metrics.comments, video.comments),
+                      rate if metrics.metrics_source == "apify_instagram_reel" else kept(rate, video.engagement_rate), previous)
         video.last_checked_at = now
+
+        # A retained older count keeps its provider/metric label when the new count is missing.
+        if metrics.views is not None:
+            video.metrics_source = metrics.metrics_source
+            video.view_metric = metrics.view_metric
+        if metrics.metrics_source:
+            video.source_metrics = metrics.source_metrics
+        elif metrics.views is not None:
+            video.source_metrics = None
 
         notes = list(metrics.notes)
         if metrics.views is None:
             notes.insert(0, "View count is not available from the API for this video")
         if video.status != VideoStatus.PAUSED:
-            video.status = VideoStatus.PARTIAL if metrics.views is None else VideoStatus.TRACKING
+            video.status = VideoStatus.PARTIAL if (metrics.views is None or (
+                metrics.metrics_source == "apify_instagram_reel" and (metrics.likes is None or metrics.comments is None)
+            )) else VideoStatus.TRACKING
         video.status_reason = "; ".join(notes) or None
         return True
 
@@ -264,10 +430,38 @@ def _temporary_note(error: PlatformError, last_ok: datetime | None) -> str:
     return f"Latest check failed ({error.message}) - showing the numbers from {when}; {RETRY_NOTE}"
 
 
+META_PLATFORMS = ("instagram", "facebook")
+
+
+def meta_wait_note(error: PlatformError, last_ok: datetime | None = None) -> str:
+    """'Pending - waiting for Meta's hourly limit (...; continues after 13:05)' [+ which stored numbers are shown]."""
+    note = error.message.split(": ", 1)[-1] if META_WAIT in error.message else ""
+    if not note.startswith(META_WAIT):
+        resume = meta_budget.resume_at()
+        when = f"; continues after {as_utc(resume).astimezone(tracking_tz()):%H:%M}" if resume else ""
+        note = f"{META_WAIT} ({error.message.split(': ', 1)[-1]}{when})"
+    if last_ok:
+        note += f" - showing the numbers from {as_utc(last_ok).astimezone(tracking_tz()):%d %b, %I:%M %p}"
+    return note
+
+
 def save_error(video_id: int, error: PlatformError) -> None:
     with session_scope() as db:
         video = db.get(VtVideo, video_id)
         if video is None:
+            return
+        if error.code == "apify_error":
+            # No Meta queue, metric erasure, or advancement of Last Checked after an Apify failure.
+            if video.status not in (VideoStatus.PAUSED, VideoStatus.COMPLETED):
+                video.status = VideoStatus.PARTIAL if _has_metrics(video) else VideoStatus.FAILED
+            video.status_reason = error.message
+            return
+        if error.code == PlatformError.RATE_LIMITED and video.platform in META_PLATFORMS:
+            # Meta's hourly limit (or our budget for it): queued, not failed. Stored numbers and "last checked"
+            # stay; the Meta queue continues these videos automatically, oldest first.
+            if video.status != VideoStatus.PAUSED:
+                video.status = VideoStatus.PENDING
+            video.status_reason = meta_wait_note(error, video.last_checked_at if video.current_views is not None else None)
             return
         if error.code in TEMPORARY_ERRORS and video.current_views is not None:
             # A temporary problem (e.g. Meta's hourly rate limit) does not make good numbers wrong: the video
@@ -375,7 +569,11 @@ def recover_after_restart() -> list[int]:
             .where(VtJobRun.status == "running")
             .values(status="failed", finished_at=utcnow(), message="Interrupted by a server restart")
         )
-        ids = list(db.scalars(select(VtVideo.id).where(VtVideo.status.in_(VideoStatus.ACTIVE_WORK))))
+        # (videos waiting for Meta's hourly limit are continued by the Meta queue, within the budget)
+        ids = list(db.scalars(select(VtVideo.id).where(
+            VtVideo.status.in_(VideoStatus.ACTIVE_WORK),
+            or_(VtVideo.status_reason.is_(None), ~VtVideo.status_reason.like(f"{META_WAIT}%")),
+        )))
         return ids
 
 
@@ -612,12 +810,14 @@ def _add_video(
         )
         if existing is not None:
             raise Conflict("This video is already being tracked", existing.id)
+        owner = _validated_owner(owner_username, parsed)
         video = VtVideo(
             platform=parsed.platform,
             video_identifier=parsed.identifier,
             video_url=parsed.url,
+            instagram_media_kind=parsed.instagram_media_kind,
             creator_name=creator_name or None,
-            owner_username=(owner_username or parsed.owner_username) if parsed.platform == "instagram" else None,
+            owner_username=owner,
             source=source,
             upload_id=upload_id,
             status=VideoStatus.PENDING,
@@ -654,6 +854,10 @@ def update_video(
         if video is None:
             raise LookupError("Video not found")
         reprocess = False
+        if parsed is not None and parsed.platform == "instagram" and video.instagram_media_kind != parsed.instagram_media_kind:
+            video.instagram_media_kind = parsed.instagram_media_kind
+            if video.status not in (VideoStatus.PAUSED, VideoStatus.COMPLETED):
+                reprocess = True
         if creator_name is not None:
             video.creator_name = creator_name or None
         if parsed is not None and (parsed.platform, parsed.identifier) != (video.platform, video.video_identifier):
@@ -669,6 +873,8 @@ def update_video(
             db.execute(delete(VtSentiment).where(VtSentiment.video_id == video_id))
             video.platform, video.video_identifier, video.video_url = parsed.platform, parsed.identifier, parsed.url
             video.owner_username = parsed.owner_username if parsed.platform == "instagram" else None
+            video.instagram_media_kind = parsed.instagram_media_kind
+            video.metrics_source = video.view_metric = video.source_metrics = None
             video.channel_id = video.creator_id = None
             for field_name in (
                 "title", "caption", "published_at", "current_views", "previous_views", "views_gained", "growth_pct",
@@ -678,8 +884,34 @@ def update_video(
                 setattr(video, field_name, None)
             video.tracking_started_at = utcnow()
             reprocess = True
-        if owner_username is not None and video.platform == "instagram" and owner_username != video.owner_username:
-            video.owner_username = owner_username or None
+        incoming = _validated_owner(owner_username, parsed) if parsed else parse_instagram_handle(owner_username)
+        if owner_username and not incoming:
+            raise Conflict("Instagram username is not valid")
+        if incoming and video.platform == "instagram" and incoming != video.owner_username:
+            if parse_instagram_handle(video.owner_username) and _owner_verified(db, video):
+                log_event(logger, logging.WARNING, "vt_verified_owner_edit_conflict", video_id=video.id,
+                          stored_owner=video.owner_username, incoming_owner=incoming)
+                raise Conflict("This Reel already has a verified owner; conflicting metadata was not applied")
+            old_owner = parse_instagram_handle(video.owner_username)
+            video.owner_username = incoming
+            video.creator_id = None
+            # Keep original upload values for audit, but mark metadata explicitly corrected by the user.
+            # Otherwise an immutable old upload could prevent every subsequent retry of the corrected Reel.
+            from app.video_performance.models import VtUploadRow
+            upload_rows = db.scalars(select(VtUploadRow).where(
+                VtUploadRow.platform == "instagram", VtUploadRow.username.is_not(None),
+                VtUploadRow.video_link.contains(video.video_identifier, autoescape=True),
+            ))
+            for source_row in upload_rows:
+                source = parse_video_link(source_row.video_link, instagram_reel_hint=source_row.platform == "instagram")
+                if (source.platform == "instagram" and source.identifier == video.video_identifier
+                        and parse_instagram_handle(source_row.username) != incoming):
+                    source_row.message = "Owner metadata superseded by explicit edit; " + (source_row.message or "original value retained")
+            if old_owner and parse_instagram_handle(video.creator_name) == old_owner:
+                video.creator_name = f"@{incoming}"
+            if parsed is not None:
+                video.video_url = parsed.url
+            _link_creator(db, video)
             reprocess = True
         if tracking == "paused":
             video.status = VideoStatus.PAUSED
@@ -788,20 +1020,113 @@ def has_sentiment(video_id: int) -> bool:
 
 
 # --------------------------------------------------------------------- import
+def _validated_owner(value: str | None, parsed: ParsedVideo | None) -> str | None:
+    if parsed is not None and parsed.platform != "instagram":
+        return None
+    explicit = parse_instagram_handle(value)
+    source = parse_instagram_handle(parsed.owner_username) if parsed else None
+    if value and not explicit:
+        raise Conflict("Instagram username is not valid")
+    if explicit and source and explicit != source:
+        raise Conflict("Conflicting Instagram owner metadata in the username and video URL")
+    return source or explicit
+
+
+def _enrich_import_owner(db: Session, video: VtVideo, row) -> bool:
+    """Fill missing metadata without replacing an existing owner or changing upload ownership."""
+    if video.platform != "instagram" or not row.owner_username:
+        return False
+    incoming = _validated_owner(row.owner_username, row.parsed)
+    stored = parse_instagram_handle(video.owner_username)
+    if stored:
+        if stored != incoming:
+            note = f"Owner conflict: stored @{stored}, supplied @{incoming}; stored owner retained"
+            row.message = f"{row.message}; {note}" if row.message else note
+            log_event(logger, logging.WARNING, "vt_import_owner_conflict", video_id=video.id,
+                      stored_owner=stored, incoming_owner=incoming)
+        return False
+    video.owner_username = incoming
+    _link_creator(db, video)
+    row.message = "Already being tracked; missing Instagram owner supplied"
+    if video.status not in (*VideoStatus.ACTIVE_WORK, VideoStatus.PAUSED, VideoStatus.COMPLETED):
+        video.status, video.status_reason = VideoStatus.PENDING, None
+        row.message += "; metrics retrieval queued"
+        return True
+    return False
+
+
+# ------------------------------------------------- reel owner search memory
+# Accounts whose available media lists were exhausted without finding a reel. Truncated scans cannot rule
+# out an owner. v2 ignores legacy entries, which could incorrectly cache partial scans as exhaustive.
+# Kept in api_rate_status (one JSON row) - no schema change, survives restarts.
+OWNER_SEARCH_SERVICE = "vt_owner_search_v2"
+
+
+def owner_search_history(shortcodes: list[str]) -> dict[str, set[str]]:
+    """{shortcode: accounts already searched without finding it}."""
+    from app.models.usage import ApiRateStatus
+
+    with read_scope() as db:
+        row = db.get(ApiRateStatus, OWNER_SEARCH_SERVICE)
+        saved = (row.details or {}) if row else {}
+    return {code: set(saved.get(code) or []) for code in shortcodes}
+
+
+def record_owner_search(searched: dict[str, set[str]]) -> None:
+    """Remember accounts whose media lists were exhausted without finding these reels."""
+    from app.models.usage import ApiRateStatus
+
+    if not searched:
+        return
+    with session_scope() as db:
+        row = db.get(ApiRateStatus, OWNER_SEARCH_SERVICE) or ApiRateStatus(service=OWNER_SEARCH_SERVICE)
+        details = dict(row.details or {})
+        for code, accounts in searched.items():
+            details[code] = sorted(set(details.get(code) or []) | accounts)
+        row.details, row.observed_at = details, utcnow()  # reassigned so the JSON change is saved
+        db.add(row)
+
+
+def forget_owner_search(shortcodes: list[str]) -> None:
+    """Found (or owner supplied): the reel no longer needs its search memory."""
+    from app.models.usage import ApiRateStatus
+
+    with session_scope() as db:
+        row = db.get(ApiRateStatus, OWNER_SEARCH_SERVICE)
+        if row is not None and row.details and any(code in row.details for code in shortcodes):
+            row.details = {k: v for k, v in row.details.items() if k not in shortcodes}
+
+
 def _import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, list[int]]:
-    """Insert new videos from an import in bulk and record the upload. Returns (upload_id, new video IDs)."""
+    """Record an upload, add videos, and recover ownerless records. Return IDs needing processing."""
     from app.video_performance.models import VtUpload, VtUploadRow
 
     candidates = [r for r in rows if r.status == "pending"]
-    tracked = existing_identifiers([(r.parsed.platform, r.parsed.identifier) for r in candidates])
     with session_scope() as db:
+        tracked = {}
+        for start in range(0, len(candidates), 100):
+            conditions = [and_(VtVideo.platform == r.parsed.platform, VtVideo.video_identifier == r.parsed.identifier)
+                          for r in candidates[start:start + 100]]
+            tracked.update({(v.platform, v.video_identifier): v for v in db.scalars(select(VtVideo).where(or_(*conditions)))})
         upload = VtUpload(filename=filename, stored_filename=stored, total_rows=len(rows))
         db.add(upload)
         db.flush()
         new_videos = []
+        recovered = []
         for row in candidates:
-            if (row.parsed.platform, row.parsed.identifier) in tracked:
-                row.status, row.message = "already_tracked", "Already being tracked"
+            existing = tracked.get((row.parsed.platform, row.parsed.identifier))
+            if existing is not None:
+                row.status = "already_tracked"
+                row.message = row.message or "Already being tracked"
+                if _enrich_import_owner(db, existing, row):
+                    recovered.append(existing.id)
+                if existing.instagram_media_kind is None and row.parsed.instagram_media_kind:
+                    existing.instagram_media_kind = row.parsed.instagram_media_kind
+                    from app.config.settings import get_settings
+                    if (get_settings().apify_reels_configured and row.parsed.instagram_media_kind == "reel"
+                            and existing.status not in (*VideoStatus.ACTIVE_WORK, VideoStatus.PAUSED, VideoStatus.COMPLETED)):
+                        existing.status, existing.status_reason = VideoStatus.PENDING, None
+                        recovered.append(existing.id)
                 continue
             row.status = "added"
             new_videos.append(
@@ -809,8 +1134,9 @@ def _import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, li
                     platform=row.parsed.platform,
                     video_identifier=row.parsed.identifier,
                     video_url=row.parsed.url,
+                    instagram_media_kind=row.parsed.instagram_media_kind,
                     creator_name=row.creator_name,
-                    owner_username=row.owner_username,
+                    owner_username=_validated_owner(row.owner_username, row.parsed),
                     source="upload",
                     upload_id=upload.id,
                     status=VideoStatus.PENDING,
@@ -832,6 +1158,11 @@ def _import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, li
                     video.creator_name = video.creator_name or creator.creator_name
         db.add_all(new_videos)
         db.flush()
+        for row in rows:
+            if row.status == "duplicate":
+                existing = tracked.get((row.parsed.platform, row.parsed.identifier))
+                if existing is not None and _enrich_import_owner(db, existing, row):
+                    recovered.append(existing.id)
         db.add_all(
             VtUploadRow(
                 upload_id=upload.id,
@@ -849,7 +1180,7 @@ def _import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, li
         upload.already_tracked = sum(1 for r in rows if r.status == "already_tracked")
         upload.duplicates = sum(1 for r in rows if r.status == "duplicate")
         upload.invalid = sum(1 for r in rows if r.status == "invalid")
-        return upload.id, [v.id for v in new_videos]
+        return upload.id, list(dict.fromkeys([v.id for v in new_videos] + recovered))
 
 
 # ------------------------------------------------- concurrency-safe wrappers
@@ -879,7 +1210,7 @@ def import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, lis
             if attempt == 2:
                 raise
             for row in rows:  # retry: rows the concurrent import added now count as already tracked
-                if row.status == "added":
+                if row.status in ("added", "already_tracked"):
                     row.status = "pending"
     raise AssertionError("unreachable")
 

@@ -30,16 +30,34 @@ from app.services.api_usage import (
     record_youtube_call,
     record_youtube_quota_exceeded,
 )
-from app.services import youtube_keys
+from app.services import meta_budget, youtube_keys
 from app.services.http_client import HttpRequestError, request_json
 from app.utils.logging import log_event
 from app.utils.url_parser import ParsedLink
-from app.video_performance.urls import instagram_shortcode_from_permalink
+from app.video_performance.urls import instagram_shortcode_from_permalink, parse_instagram_handle
 
 logger = logging.getLogger("creatorintel.video_performance.platforms")
 
 YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
 GRAPH_API = "https://graph.facebook.com"
+META_WAIT = "Pending - waiting for Meta's hourly limit"
+
+
+def _meta_attempt(record, request_budget: list[int] | None = None) -> "Any":
+    """on_attempt hook for Graph calls: reserve the call in the Meta budget (or stop), then count it."""
+    def attempt() -> None:
+        if request_budget is not None and request_budget[0] <= 0:
+            raise PlatformError(PlatformError.OWNER_UNRESOLVED, "Instagram owner search incomplete: request limit reached")
+        meta_budget.take()
+        if request_budget is not None:
+            request_budget[0] -= 1
+        record()
+    return attempt
+
+
+def meta_wait_error(exc: "meta_budget.MetaBudgetExhausted") -> "PlatformError":
+    when = datetime.fromtimestamp(exc.resume_at).astimezone()
+    return PlatformError(PlatformError.RATE_LIMITED, f"{META_WAIT} ({exc.reason}; continues after {when:%H:%M})")
 
 
 class PlatformError(Exception):
@@ -49,6 +67,8 @@ class PlatformError(Exception):
     UNSUPPORTED = "unsupported"
     RATE_LIMITED = "rate_limited"
     API = "api_error"
+    OWNER_UNRESOLVED = "owner_unresolved"
+    OWNER_CONFLICT = "owner_conflict"
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -69,6 +89,10 @@ class VideoMetrics:
     channel_title: str | None = None
     owner_username: str | None = None
     notes: list[str] = field(default_factory=list)
+    metrics_source: str | None = None
+    view_metric: str | None = None
+    source_metrics: dict | None = None
+    source_run_id: str | None = None
 
 
 @dataclass
@@ -278,7 +302,7 @@ class InstagramVideoClient:
             ).hexdigest()
         return extra
 
-    async def _get(self, path: str, params: dict[str, Any]) -> dict:
+    async def _get(self, path: str, params: dict[str, Any], request_budget: list[int] | None = None) -> dict:
         try:
             return await request_json(
                 "GET", f"{GRAPH_API}/{self.settings.meta_api_version}/{path}", service="Instagram Graph API",
@@ -287,11 +311,16 @@ class InstagramVideoClient:
                 # Rate-limit answers are not retried here: Meta's limits run per hour, so retrying within
                 # seconds never succeeds and only uses up more of the allowance.
                 client=self.client,
-                on_attempt=record_instagram_call,
+                on_attempt=_meta_attempt(record_instagram_call, request_budget),
                 on_response=record_meta_usage,
             )
+        except meta_budget.MetaBudgetExhausted as exc:  # nothing was sent
+            raise meta_wait_error(exc) from exc
         except HttpRequestError as exc:
-            raise self._translate(exc) from exc
+            error = self._translate(exc)
+            if error.code == PlatformError.RATE_LIMITED:
+                meta_budget.note_rate_limited()
+            raise error from exc
 
     @staticmethod
     def _translate(exc: HttpRequestError) -> PlatformError:
@@ -335,28 +364,56 @@ class InstagramVideoClient:
                 )
             return self._viewer_id
 
-    async def profile_media(self, username: str, pages: int = 1, per_page: int = 50) -> tuple[dict, list[InstagramMedia]]:
-        """A Professional account's profile + its most recent media (newest first)."""
+    async def profile_media(
+        self, username: str, pages: int = 1, per_page: int = 50, find: set[str] | None = None,
+        request_budget: list[int] | None = None,
+    ) -> tuple[dict, list[InstagramMedia]]:
+        """A Professional account's profile + its most recent media (newest first).
+
+        With `find`, pages are read one at a time and reading stops as soon as all those shortcodes were seen
+        (one call when the reels are among the latest 50 posts) - older pages are read only when needed.
+        """
+        username = parse_instagram_handle(username)
+        if username is None:
+            raise PlatformError(PlatformError.OWNER_UNRESOLVED, "A valid Instagram owner username is required")
         self._check_config()
         viewer = await self._viewer()
         media: list[InstagramMedia] = []
         profile: dict = {}
         after: str | None = None
-        for _page in range(pages):
+        cursors: set[str] = set()
+        pages_read = 0
+        complete = False
+        scan_error = None
+        while pages_read < pages:
+            if request_budget is not None:
+                if request_budget[0] <= 0:
+                    break
             fields_media = f"{_MEDIA_FIELDS},view_count" if self._views_supported else _MEDIA_FIELDS
             cursor = f".after({after})" if after else ""
             fields = f"business_discovery.username({username}){{{_PROFILE_FIELDS},media{cursor}.limit({per_page}){{{fields_media}}}}}"
             try:
-                data = await self._get(viewer, {"fields": fields})
+                data = await self._get(viewer, {"fields": fields}, request_budget=request_budget)
             except PlatformError as exc:
                 if exc.code == "view_field" and self._views_supported:
                     self._views_supported = False  # this API version does not expose view counts
                     log_event(logger, logging.WARNING, "vt_instagram_view_count_unsupported")
                     continue
+                if media:
+                    scan_error = exc
+                    break  # keep exact matches from earlier pages; unresolved reels retain this error
                 raise
-            discovery = data.get("business_discovery") or {}
+            pages_read += 1
+            discovery = data.get("business_discovery")
+            if not discovery:
+                raise PlatformError(PlatformError.UNSUPPORTED, "Instagram account is unavailable through Business Discovery")
             profile = profile or {k: discovery.get(k) for k in ("id", "username", "name", "followers_count")}
+            returned_owner = parse_instagram_handle(profile.get("username"))
+            if returned_owner and returned_owner != username:
+                raise PlatformError(PlatformError.OWNER_CONFLICT, "Business Discovery returned a different Instagram username")
             block = discovery.get("media") or {}
+            if not isinstance(block.get("data"), list):
+                raise PlatformError(PlatformError.API, "Instagram Business Discovery did not return a media list")
             for item in block.get("data") or []:
                 shortcode = instagram_shortcode_from_permalink(item.get("permalink"))
                 if not shortcode:
@@ -375,8 +432,18 @@ class InstagramVideoClient:
                     )
                 )
             after = ((block.get("paging") or {}).get("cursors") or {}).get("after")
-            if not after or not (block.get("paging") or {}).get("next"):
+            # Nested Business Discovery edges can return cursors without a paging.next URL.
+            if not after or not block["data"]:
+                complete = True
                 break
+            if after in cursors:
+                break
+            cursors.add(after)
+            if find and find <= {m.shortcode for m in media}:
+                break  # every wanted reel found: no need to read older posts
+        profile["_scan_complete"] = complete
+        profile["_scan_pages"] = pages_read
+        profile["_scan_error"] = scan_error
         return profile, media
 
 # -------------------------------------------------------------------- Facebook
@@ -424,11 +491,16 @@ class FacebookVideoClient:
                 headers={"Authorization": f"Bearer {token}"},
                 # no retry on rate-limit answers (hourly limits - an immediate retry only uses more of them)
                 client=self.client,
-                on_attempt=record_facebook_call,
+                on_attempt=_meta_attempt(record_facebook_call),
                 on_response=record_meta_usage,
             )
+        except meta_budget.MetaBudgetExhausted as exc:  # nothing was sent
+            raise meta_wait_error(exc) from exc
         except HttpRequestError as exc:
-            raise self._translate(exc) from exc
+            error = self._translate(exc)
+            if error.code == PlatformError.RATE_LIMITED:
+                meta_budget.note_rate_limited()
+            raise error from exc
 
     @staticmethod
     def _translate(exc: HttpRequestError) -> PlatformError:
