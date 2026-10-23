@@ -172,7 +172,7 @@ def test_full_video_tracking_flow(api):
     assert all(row[3] == "" for row in csv_rows[1:] if row[2] == "YouTube")
     # Shared export design: coloured header with filters, frozen header row, clickable links.
     assert workbook.sheetnames == ["Video list", "About"]  # data first, so it stays re-uploadable
-    assert sheet["A1"].fill.fgColor.rgb == "004338CA" and sheet["A1"].font.bold
+    assert sheet["A1"].fill.fgColor.rgb == "00107C41" and sheet["A1"].font.bold
     assert sheet.freeze_panes == "A2"
     assert sheet.max_column == 4
     assert sheet.column_dimensions["A"].width >= 24
@@ -196,7 +196,7 @@ def test_full_video_tracking_flow(api):
     )
     assert report_sheet.max_column == 18
     assert report_sheet["E1"].value == "Current Views"
-    assert report_sheet["A1"].fill.fgColor.rgb == "004338CA"
+    assert report_sheet["A1"].fill.fgColor.rgb == "00107C41"
     assert report_sheet.freeze_panes == "B2"  # header row + video title stay visible
     assert report_sheet.auto_filter.ref == f"A1:R{report_sheet.max_row}"
     assert report_sheet["P1"].value.startswith("Last Checked (") and report_sheet.column_dimensions["P"].width >= 19

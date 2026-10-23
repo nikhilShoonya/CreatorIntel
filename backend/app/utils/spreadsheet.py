@@ -25,7 +25,7 @@ from app.utils.text import sanitize_spreadsheet_cell
 # ---------------------------------------------------------------- design tokens (match the web app)
 FONT = "Calibri"  # available in every Excel / LibreOffice / Google Sheets install
 INK, MUTED, LINK = "1F2937", "94A3B8", "4338CA"
-HEADER_FILL, HEADER_TEXT = "4338CA", "FFFFFF"
+HEADER_FILL, HEADER_TEXT = "107C41", "FFFFFF"  # Excel green
 BAND_FILL, RULE = "F7F8FC", "E5E7EB"
 
 _TONES = {  # (text, background)
