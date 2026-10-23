@@ -4,9 +4,10 @@ import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { AlertTriangle, ArrowRight, ArrowUpRight, CalendarDays, CheckCircle2, ChevronDown, Loader2, Sparkles, Users } from "lucide-react";
 
+import { CreatorUploadDialog } from "@/components/creators/CreatorUploadDialog";
 import { ExportMenu } from "@/components/creators/ExportMenu";
 import { SentimentBadge, StatusBadge } from "@/components/ui/Badges";
-import { Card, EmptyState, ErrorBanner } from "@/components/ui/controls";
+import { Button, Card, EmptyState, ErrorBanner } from "@/components/ui/controls";
 import { CreatorAvatar } from "@/components/ui/CreatorAvatar";
 import { PlatformIcon } from "@/components/ui/PlatformIcon";
 import { Donut, MultiTrendChart } from "@/components/video-performance/charts";
@@ -50,6 +51,7 @@ export default function CreatorAnalyticsDashboard() {
   const [storedRange, setRange] = useStoredValue(RANGE_KEY, "30");
   const days = RANGES.some((r) => r.days === Number(storedRange)) ? Number(storedRange) : 30;
   const [exportError, setExportError] = useState<string | null>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const { data, error, reload } = useApi(`creator-dashboard:${days}`, () => api.creatorDashboard(days), {
     keepPrevious: true,
     // follow creators being analysed right now; otherwise the stored data is shown as it is
@@ -82,15 +84,18 @@ export default function CreatorAnalyticsDashboard() {
             title="No creators yet"
             description="Upload an Excel or CSV list of creators. Their YouTube / Instagram data and AI analysis then appear here."
             action={
-              <Link href="/" className="inline-flex h-9 items-center gap-2 rounded-lg bg-accent px-4 text-sm font-medium text-white hover:bg-accent-strong">
+              <Button variant="primary" onClick={() => setUploadOpen(true)}>
                 Upload creators <ArrowRight size={15} />
-              </Link>
+              </Button>
             }
           />
         </Card>
       )}
 
       {data && data.total > 0 && <DashboardBody data={data} days={days} onRange={(value) => setRange(String(value))} />}
+
+      {/* Outside the empty state: the dashboard leaves it as soon as uploaded creators exist, mid-progress. */}
+      <CreatorUploadDialog open={uploadOpen} onClose={() => setUploadOpen(false)} onUploaded={reload} />
     </div>
   );
 }

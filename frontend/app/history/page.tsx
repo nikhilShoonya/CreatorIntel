@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Clapperboard, FileText, History, Loader2, Search, Trash2, Users } from "lucide-react";
+import { ArrowRight, Clapperboard, FileText, History, Loader2, RotateCcw, Search, Trash2, Users } from "lucide-react";
 
 import { Card, EmptyState, ErrorBanner } from "@/components/ui/controls";
 import { ConfirmDialog } from "@/components/ui/Dialog";
@@ -10,7 +10,7 @@ import { FileRowsDialog, OutcomePill } from "@/components/ui/FileRowsDialog";
 import { UploadVideosDialog } from "@/components/video-performance/dialogs";
 import { UploadsPanel } from "@/components/video-performance/UploadsPanel";
 import { useApi } from "@/hooks/useApi";
-import { useUploads } from "@/hooks/useData";
+import { useUpload, useUploads } from "@/hooks/useData";
 import { useStoredValue } from "@/hooks/useStoredValue";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
@@ -67,6 +67,31 @@ function UploadStatusPill({ upload }: { upload: UploadSummary }) {
     <span className={`inline-flex rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset ${cls}`}>
       {failed ? "Stopped" : issues ? "Completed with issues" : "Completed"}
     </span>
+  );
+}
+
+/**
+ * "Retry failed & partial (N)" for one creator upload. Counts exactly what the backend re-queues (the same rule the
+ * retired Upload & Analyze page used): Failed / Partial creators with a YouTube or Instagram link - invalid links are
+ * also Failed but cannot be retried, so the upload's own items are read instead of its failed_rows total.
+ */
+function RetryFailedAction({ upload, busy, disabled, onRetry }: { upload: UploadSummary; busy: boolean; disabled: boolean; onRetry: (upload: UploadSummary) => void }) {
+  const { data: detail } = useUpload(upload.id);
+  const retryable = (detail?.items ?? []).filter(
+    (item) => (item.status === "Failed" || item.status === "Partial") && (item.platform === "youtube" || item.platform === "instagram"),
+  ).length;
+  if (!detail || detail.status === "processing" || retryable === 0) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => onRetry(upload)}
+      disabled={disabled}
+      title="Fetch and analyse this upload's failed and partial creators again"
+      className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-amber-700 hover:underline disabled:cursor-not-allowed disabled:opacity-50 disabled:no-underline"
+    >
+      {busy ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+      {busy ? "Retrying…" : `Retry failed & partial (${retryable})`}
+    </button>
   );
 }
 
@@ -177,6 +202,26 @@ function CreatorHistory({ query }: { query: string }) {
   const [alsoCreators, setAlsoCreators] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [viewing, setViewing] = useState<UploadSummary | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  // One retry request at a time; the upload then shows as Processing (the list polls until it finishes).
+  async function retryUpload(upload: UploadSummary) {
+    if (retryingId) return;
+    setRetryingId(upload.id);
+    setRetryError(null);
+    try {
+      await api.retryFailed(upload.id);
+      setNotice(`Retrying the failed and partial creators of ${upload.filename} - they are processed in the background.`);
+      window.setTimeout(() => setNotice(null), 4000);
+    } catch (err) {
+      setRetryError(err instanceof Error ? err.message : "Retry failed");
+      window.setTimeout(() => setRetryError(null), 8000);
+    } finally {
+      setRetryingId(null);
+      reload();
+    }
+  }
 
   async function confirmDelete() {
     if (!toDelete) return;
@@ -189,6 +234,7 @@ function CreatorHistory({ query }: { query: string }) {
   return (
     <div className="space-y-3">
       {error && <ErrorBanner message={error} onRetry={reload} />}
+      {retryError && <ErrorBanner message={retryError} />}
       {notice && (
         <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
           {notice}
@@ -245,6 +291,14 @@ function CreatorHistory({ query }: { query: string }) {
                         </td>
                         <td className="border-b border-line px-4 py-3">
                           <div className="flex items-center justify-end gap-3">
+                            {upload.status !== "processing" && upload.failed_rows + upload.partial_rows > 0 && (
+                              <RetryFailedAction
+                                upload={upload}
+                                busy={retryingId === upload.id}
+                                disabled={retryingId !== null}
+                                onRetry={retryUpload}
+                              />
+                            )}
                             <button
                               type="button"
                               onClick={() => setViewing(upload)}

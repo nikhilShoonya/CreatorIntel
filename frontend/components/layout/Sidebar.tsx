@@ -38,7 +38,7 @@ const VIDEO_PERFORMANCE: NavItem[] = [
 ];
 
 // Dashboards are exact matches so they are not also active on the pages below them.
-const EXACT = new Set(["/", "/video-performance", "/creator-analytics"]);
+const EXACT = new Set(["/video-performance", "/creator-analytics"]);
 
 function isActive(pathname: string, href: string) {
   if (EXACT.has(href)) return pathname === href;

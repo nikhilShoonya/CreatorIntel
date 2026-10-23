@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { X } from "lucide-react";
 
 import { CreatorsTable } from "@/components/creators/CreatorsTable";
+import { MetaQueueBanner } from "@/components/ui/MetaQueueBanner";
 import { useUpload } from "@/hooks/useData";
 
 function CreatorList() {
@@ -54,6 +55,7 @@ export default function CreatorsPage() {
         <h1 className="text-xl font-semibold tracking-tight text-ink">Creator List</h1>
         <p className="text-sm text-muted">Every creator analysed so far. Search, filter, sort and export.</p>
       </div>
+      <MetaQueueBanner scope="creators" />
       <Suspense fallback={<div className="h-96 animate-pulse rounded-xl border border-line bg-white" />}>
         <CreatorList />
       </Suspense>

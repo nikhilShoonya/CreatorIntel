@@ -21,9 +21,6 @@ function subscribe(callback: () => void) {
   };
 }
 
-/** The upload shown on the Upload & Analyze page. */
-export const LAST_UPLOAD_KEY = "creatorintel:last-upload";
-
 /** Per-browser convenience value (e.g. display name, last upload). Never used for secrets. */
 export function useStoredValue(key: string, fallback: string): [string, (value: string | null) => void] {
   const value = useSyncExternalStore(

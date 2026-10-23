@@ -76,7 +76,7 @@ NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
 
 This public URL is the only setting the frontend has. Never put keys here.
 
-> **Restart the backend after editing `backend/.env`.** It is read only at startup. Rows processed before the restart keep their old result; use **Retry failed & partial** on the upload card, or **⋮ → Retry** on a row.
+> **Restart the backend after editing `backend/.env`.** It is read only at startup. Rows processed before the restart keep their old result; use **Retry failed & partial** on the upload in **History**, or **⋮ → Retry** on a row.
 
 ## 3. YouTube API setup
 
@@ -177,10 +177,10 @@ npm run build && npm start  # production
 
 | Page | What it does |
 | --- | --- |
-| **Upload & Analyze** (`/`, no longer in the sidebar) | The previous upload page; still works at `/`. Creator uploads are now done from the Creator List (**Upload Creators**) |
-| **Creator Analytics → Dashboard** (`/creator-analytics`) | Totals and distributions over all stored creators (platform, status, genre, language, sentiment, average engagement), recently analysed creators and those needing attention. Read-only: opening it never calls YouTube, Instagram or the AI. Clicking a number opens the Creator List with that filter |
+| `/` | Redirects to **Creator Analytics → Dashboard**. The former Upload & Analyze page was retired; old bookmarks of `/` keep working |
+| **Creator Analytics → Dashboard** (`/creator-analytics`) | Totals and distributions over all stored creators (platform, status, genre, language, sentiment, average engagement), recently analysed creators and those needing attention. Read-only: opening it never calls YouTube, Instagram or the AI. Clicking a number opens the Creator List with that filter. With no creators yet, **Upload creators** opens the upload dialog |
 | **Creator Analytics → Creator List** (`/creators`) | All analysed creators: search, filter, sort, details popup, add/edit/delete, retry, re-analyse, export. Filters can be set in the link, e.g. `/creators?status=Failed` |
-| **History** (`/history`) | Two tabs: **Creator Analytics History** (creator uploads: file data, view creators, delete) and **Video Tracking History** (video lists: view data, rename, re-check, download, delete), with a file-name search |
+| **History** (`/history`) | Two tabs: **Creator Analytics History** (creator uploads, newest first: live processing status, file data, view creators, **Retry failed & partial**, delete) and **Video Tracking History** (video lists: view data, rename, re-check, download, delete), with a file-name search |
 | **Video Performance → Dashboard** | Totals, daily views trend, sentiment breakdown, top / most engaging videos, job status with **Run now** |
 | **Video Performance → Tracking Library** | **Tracked videos** (table, filters, history, bulk actions) and **Uploads** (each uploaded video list) |
 | **Settings** | Integration status, YouTube quota per key, Meta usage (Instagram + Facebook), Groq AI usage per key, Meta token health |
@@ -208,7 +208,7 @@ The frontend calls only the backend (`NEXT_PUBLIC_API_URL`) and holds no secrets
 | Creator List | **Upload Creators** (drag & drop or browse an Excel/CSV; existing creators reuse their data, only new ones are fetched) and **Add creator** without a file |
 | Row **⋮** menu / details popup | **Edit** name or link, **Delete**, **Retry**, **Re-analyze** |
 | Table checkboxes | **Delete selected** |
-| History | **Delete upload**, optionally with its creators that belong to no other upload |
+| History | Follow an upload while it is processing (the latest upload is the first row), **View creators** of one upload, **Retry failed & partial** (shown only when the upload has failed or partial creators with a valid YouTube / Instagram link; invalid links cannot be retried - fix them with **Edit**), and **Delete upload**, optionally with its creators that belong to no other upload |
 
 **Uploading creators that are already in the list:** their stored data is reused as it is, however old, with no YouTube, Instagram or AI calls. Failed and partial creators are not retried by an upload. Only new creators are fetched and analysed, and duplicate rows within a file are still removed.
 
@@ -340,7 +340,7 @@ Other rules that apply here:
 - Each owner's posts are read once per run, 50 at a time; older pages are read only while a reel is still missing.
 - A rate-limited call is never retried immediately.
 - YouTube is not affected: videos are still fetched in batches of 50.
-- The Tracking Library and Upload & Analyze pages show how much is waiting and when it continues. Each upload shows "X of Y Instagram reels fetched, rest continue automatically after …".
+- The Tracking Library (videos) and the Creator List (creators) show how much is waiting and when it continues. Each upload shows "X of Y Instagram reels fetched, rest continue automatically after …".
 
 **Instagram limits:**
 - A reel can only be read through its owner's **Professional** account.
