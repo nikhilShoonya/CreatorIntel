@@ -562,3 +562,93 @@ def test_reel_that_does_not_exist_with_unknown_owner_spends_no_meta_calls(settin
     server = ActorServer(lambda items: [dict(items[0], error="not_found", errorDescription="Post does not exist")])
     assert process(make_tracker(settings, server, instagram=meta), [vid]) == (0, 1)
     assert meta.calls == [] and _video(vid).status == VideoStatus.VIDEO_DOWN
+
+
+# ------------------------------------------------------------------ Meta first, Apify backup (and back again)
+def owned_reel(owner="posting_owner"):
+    shortcode = code()
+    return repo.add_video(parse_video_link(f"https://www.instagram.com/{owner}/reel/{shortcode}/"), None, owner, "manual"), shortcode
+
+
+def run_queue(tracker):
+    async def run():
+        try:
+            return await tracker.process_meta_queue()
+        finally:
+            await tracker.shutdown()
+    return asyncio.run(run())
+
+
+def test_owned_reel_uses_meta_first_without_apify(settings):
+    vid, shortcode = owned_reel()
+    try:
+        meta = FakeInstagram({"posting_owner": [media(shortcode, 500)]})
+        server = ActorServer()
+        assert process(make_tracker(settings, server, instagram=meta), [vid]) == (1, 0)
+        assert server.starts == [] and meta.calls == ["posting_owner"] and _video(vid).current_views == 500
+    finally:
+        repo.delete_videos([vid])
+
+
+def test_apify_is_the_backup_when_meta_cannot_read_the_reel(settings, monkeypatch):
+    vid, shortcode = owned_reel()
+    monkeypatch.setattr(repo, "instagram_owner_candidates", lambda: ["other_account"])
+    try:
+        meta = FakeInstagram({"posting_owner": [], "other_account": []})  # not on the owner's posts
+        server = ActorServer()
+        assert process(make_tracker(settings, server, instagram=meta), [vid]) == (1, 0)
+        video = _video(vid)
+        assert video.current_views == 1000 and "metrics from Apify" in video.status_reason
+        assert meta.calls == ["posting_owner"] and len(server.starts) == 1  # no costly search of other accounts
+    finally:
+        repo.delete_videos([vid])
+
+
+def test_reels_go_straight_to_apify_while_meta_is_paused(settings):
+    from app.services import meta_budget
+
+    vid, _ = owned_reel()
+    try:
+        meta_budget.note_rate_limited()  # Meta paused for the hour
+        meta = FakeInstagram({})
+        server = ActorServer()
+        assert process(make_tracker(settings, server, instagram=meta), [vid]) == (1, 0)
+        assert meta.calls == [] and len(server.starts) == 1 and _video(vid).current_views == 1000
+    finally:
+        repo.delete_videos([vid])
+
+
+def test_waiting_reels_move_to_apify_once_while_meta_is_paused(settings):
+    from app.services import meta_budget
+    from app.video_performance.platforms import META_WAIT
+
+    vid, _ = owned_reel()
+    tried, _ = owned_reel()
+    try:
+        with session_scope() as db:
+            db.get(VtVideo, vid).status, db.get(VtVideo, vid).status_reason = VideoStatus.PENDING, f"{META_WAIT} (paused)"
+            db.get(VtVideo, tried).status = VideoStatus.PENDING
+            db.get(VtVideo, tried).status_reason = f"{META_WAIT} (paused) - {repo.APIFY_TRIED_NOTE}"
+        meta_budget.note_rate_limited()
+        server = ActorServer()
+        tracker = make_tracker(settings, server)
+        assert run_queue(tracker) == 1  # only the reel Apify has not tried
+        assert len(server.starts) == 1 and _video(vid).current_views == 1000
+        assert _video(tried).status == VideoStatus.PENDING  # marked: waits for Meta's reset, no new Apify charge
+        assert run_queue(tracker) == 0 and len(server.starts) == 1
+    finally:
+        repo.delete_videos([vid, tried])
+
+
+def test_reel_apify_failed_for_is_marked_when_meta_is_paused_too(settings, monkeypatch):
+    vid = repo.add_video(parse_video_link(f"https://www.instagram.com/reel/{code()}/"), None, None, "manual")
+    monkeypatch.setattr(repo, "instagram_owner_candidates", lambda: ["acct_limited"])
+    try:
+        meta = FakeInstagram({}, rate_limited={"acct_limited"})  # Meta refuses: hourly limit
+        server = ActorServer(lambda items: [dict(items[0], error="restricted", errorDescription="restricted")])
+        assert process(make_tracker(settings, server, instagram=meta), [vid]) == (0, 1)
+        video = _video(vid)
+        assert video.status == VideoStatus.PENDING and repo.APIFY_TRIED_NOTE in video.status_reason
+        assert vid in repo.meta_waiting_ids() and vid not in repo.meta_waiting_reels_for_apify(100)
+    finally:
+        repo.delete_videos([vid])

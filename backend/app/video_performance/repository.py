@@ -146,6 +146,8 @@ def claim_videos(video_ids: list[int]) -> list[dict]:
             owner = stored if verified else (next(iter(sources.values()), None) if not conflict else None)
             # continued by the Meta queue: it is waiting for Meta, so Meta (not a new Apify run) checks it
             meta_queue = video.status == VideoStatus.PENDING and (video.status_reason or "").startswith(META_WAIT)
+            # waiting for Meta after Apify already failed for it: never sent to Apify again while Meta is paused
+            apify_tried = meta_queue and APIFY_TRIED_NOTE in (video.status_reason or "")
             if video.status != VideoStatus.PAUSED:
                 video.status = VideoStatus.PROCESSING
             rows.append(
@@ -161,6 +163,7 @@ def claim_videos(video_ids: list[int]) -> list[dict]:
                     "owner_warning": diagnostic if verified else None,
                     "needs_sentiment": video.id not in analysed,
                     "meta_queue": meta_queue,
+                    "apify_tried": apify_tried,
                     # metrics were fetched successfully before (a later "not found" means the video went down)
                     "seen": video.current_views is not None or video.likes is not None,
                 }
@@ -273,6 +276,24 @@ def repair_temporary_failures() -> list[int]:
     if repaired:
         log_event(logger, logging.INFO, "vt_temporary_failures_repaired", videos=repaired)
     return meta_waiting_ids()
+
+
+APIFY_TRIED_NOTE = "Apify could not read it either"  # in a Meta-wait note: Apify already failed for this reel
+
+
+def meta_waiting_reels_for_apify(limit: int) -> list[int]:
+    """Reels waiting for Meta's hourly limit that Apify has not tried yet, oldest first (used while Meta is paused)."""
+    with read_scope() as db:
+        return list(db.scalars(
+            select(VtVideo.id)
+            .where(
+                VtVideo.status == VideoStatus.PENDING, VtVideo.status_reason.like(f"{META_WAIT}%"),
+                VtVideo.platform == "instagram", VtVideo.instagram_media_kind == "reel",
+                ~VtVideo.status_reason.like(f"%{APIFY_TRIED_NOTE}%"),
+            )
+            .order_by(VtVideo.created_at, VtVideo.id)
+            .limit(limit)
+        ))
 
 
 def meta_waiting_ids(limit: int | None = None) -> list[int]:

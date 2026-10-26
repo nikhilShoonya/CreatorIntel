@@ -79,6 +79,13 @@ def _owner_search_pause_message() -> str:
     return f"{META_WAIT} (CreatorIntel safety stop, not a Meta refusal - {detail}{when})"
 
 
+def _apify_tried(error: PlatformError) -> PlatformError:
+    """A Meta wait for a reel Apify already failed for: marked so it is not sent to Apify again while Meta is paused."""
+    if repo.APIFY_TRIED_NOTE in error.message:
+        return error
+    return PlatformError(error.code, f"{error.message} - {repo.APIFY_TRIED_NOTE}")
+
+
 async def _owner_search_paused(error: PlatformError) -> PlatformError:
     """The owner search stopped on Meta's limit: say whether Meta refused or the app's own safety stop paused it."""
     if error.code != PlatformError.RATE_LIMITED:
@@ -126,6 +133,7 @@ class VideoTracker:
         # Live progress of a running job: job_type -> [done, total]
         self._progress: dict[str, list[int]] = {}
         self._owner_search_after: str | None = None  # rotate bounded candidate batches on subsequent retries
+        self._sent_to_apify_while_paused: set[int] = set()  # reels already handed to Apify during this Meta pause
 
     # ------------------------------------------------------------ scheduling
     def _schedule(self, coro: Coroutine[Any, Any, Any], name: str) -> None:
@@ -158,12 +166,28 @@ class VideoTracker:
         Returns how many were picked up (0 = nothing waiting, or no budget left right now)."""
         available = meta_budget.available()
         if available <= 0:
-            return 0
+            return await self._apify_while_meta_paused()
+        self._sent_to_apify_while_paused.clear()  # Meta is back: it continues everything still waiting
         # every waiting video needs at least one call (reels of one owner share it), so this never over-picks
         ids = [i for i in await asyncio.to_thread(repo.meta_waiting_ids, available) if i not in self._in_flight]
         if not ids:
             return 0
         log_event(logger, logging.INFO, "vt_meta_queue_continue", videos=len(ids), budget_left=available)
+        await self.process_videos(ids)
+        return len(ids)
+
+    async def _apify_while_meta_paused(self) -> int:
+        """Meta is paused: reels waiting for it that Apify has not tried yet go to Apify now - each one once per
+        pause (a reel Apify cannot read is marked and waits for Meta's reset, so it is never billed again meanwhile)."""
+        if not self.settings.apify_reels_configured:
+            return 0
+        waiting = await asyncio.to_thread(repo.meta_waiting_reels_for_apify, self.settings.apify_instagram_reel_batch_size * 4)
+        ids = [i for i in waiting if i not in self._in_flight and i not in self._sent_to_apify_while_paused]
+        ids = ids[: self.settings.apify_instagram_reel_batch_size]
+        if not ids:
+            return 0
+        self._sent_to_apify_while_paused.update(ids)
+        log_event(logger, logging.INFO, "vt_meta_paused_apify_continue", videos=len(ids))
         await self.process_videos(ids)
         return len(ids)
 
@@ -238,24 +262,26 @@ class VideoTracker:
         started = time.perf_counter()
         rows = await asyncio.to_thread(repo.claim_videos, video_ids)
         results: dict[int, VideoMetrics | PlatformError] = {}
-        # Reels go to Apify first - except ones the Meta queue continues: Apify already failed for them.
-        apify_rows = [r for r in rows if r["platform"] == "instagram" and r.get("instagram_media_kind") == "reel"
-                      and self.settings.apify_reels_configured and not r.get("meta_queue")]
+        # Reels: Meta first (free) while Meta has allowance and the owner is known - Meta finds a reel only through
+        # its owner's account; Apify is then the backup in this same run. Apify first for ownerless reels and while
+        # Meta is paused. A reel Apify already failed for waits for Meta instead of being sent to Apify again.
+        meta_open = meta_budget.resume_at() is None
+        meta_first: set[int] = set()
+        apify_rows: list[dict] = []
+        if self.settings.apify_reels_configured:
+            for r in rows:
+                if r["platform"] != "instagram" or r.get("instagram_media_kind") != "reel" or r.get("apify_tried"):
+                    continue
+                owned = bool(r.get("owner_username")) and not r.get("owner_conflict")
+                if meta_open and owned:
+                    meta_first.add(r["id"])
+                elif not (meta_open and r.get("meta_queue")):  # a queued ownerless reel continues its Meta owner search
+                    apify_rows.append(r)
         apify_ids = {r["id"] for r in apify_rows}
-        apify_associations = {}
+        apify_associations: dict[int, str] = {}
         if apify_rows:
-            try:
-                apify_results, apify_associations = await self.apify.videos(apify_rows, requested_at=requested_at)
-                results.update(apify_results)
-            except Exception as exc:
-                # SDK exceptions may include credential-bearing request details.
-                log_event(logger, logging.ERROR, "vt_apify_batch_failed", error_type=type(exc).__name__,
-                          database_error=isinstance(exc, SQLAlchemyError))
-                message = ("Apify database preparation failed; apply pending migrations with python -m alembic upgrade head "
-                           "and retry. No automatic Meta fallback" if isinstance(exc, SQLAlchemyError)
-                           else "Apify processing failed; no automatic Meta fallback. Retry later")
-                for row in apify_rows:
-                    results[row["id"]] = PlatformError(APIFY_ERROR, message)
+            apify_results, apify_associations = await self._apify_batch(apify_rows, requested_at)
+            results.update(apify_results)
         # Reels Apify could not read fall back to Meta's official API (Business Discovery) in this same run.
         apify_failed: dict[int, PlatformError] = {}
         for row in apify_rows:
@@ -306,6 +332,8 @@ class VideoTracker:
                 if isinstance(outcome, PlatformError) and outcome.code in (PlatformError.RATE_LIMITED, PlatformError.AUTH, PlatformError.CONFIG):
                     blocked = outcome
                     break
+        # Meta-first reels not on their owner's posts go to the Apify backup, not to a costly search of other accounts.
+        searchable = [r for r in searchable if r["id"] not in meta_first]
         if searchable and blocked is None:
             await self._find_reel_owners(searchable, scanned, results, scan_details)
         elif searchable:  # Meta refused before the owner search could run: search again with the automatic re-check
@@ -317,11 +345,34 @@ class VideoTracker:
         if facebook_rows:
             await asyncio.gather(*(self._facebook_video(row, results) for row in facebook_rows))
 
+        # Apify backup for Meta-first reels Meta could not read (paused mid-run, not on the owner's posts, API error).
+        backup = [r for r in rows if r["id"] in meta_first and not isinstance(results.get(r["id"]), VideoMetrics)]
+        if backup:
+            backup_results, backup_associations = await self._apify_batch(backup, requested_at)
+            apify_associations.update(backup_associations)
+            for row in backup:
+                meta_error = results.get(row["id"]) or PlatformError(PlatformError.API, "No result from Meta")
+                outcome = backup_results.get(row["id"])
+                if isinstance(outcome, VideoMetrics):
+                    outcome.notes.append("Meta could not read this Reel right now; metrics from Apify")
+                    results[row["id"]] = outcome
+                    apify_ids.add(row["id"])
+                elif isinstance(outcome, PlatformError) and outcome.code == APIFY_BUSY:
+                    results[row["id"]] = outcome
+                elif meta_error.code == PlatformError.RATE_LIMITED:
+                    results[row["id"]] = _apify_tried(meta_error)  # waits for Meta's reset; not re-sent to Apify meanwhile
+                else:
+                    apify_message = outcome.message if isinstance(outcome, PlatformError) else "no result"
+                    code = PlatformError.NOT_FOUND if isinstance(outcome, PlatformError) and outcome.code == APIFY_NOT_FOUND else APIFY_ERROR
+                    results[row["id"]] = PlatformError(code, f"{meta_error.message}. Apify backup - {apify_message}")
+
         for video_id, apify_error in apify_failed.items():
             outcome = results.get(video_id)
             if isinstance(outcome, VideoMetrics):
                 outcome.notes.append("Apify could not read this Reel; metrics from Meta's official API")
-            elif not (isinstance(outcome, PlatformError) and outcome.code == PlatformError.RATE_LIMITED):
+            elif isinstance(outcome, PlatformError) and outcome.code == PlatformError.RATE_LIMITED:
+                results[video_id] = _apify_tried(outcome)  # Apify already failed: it waits for Meta's reset
+            else:
                 # Both failed: Apify's rules apply (stored numbers kept, never Meta's queue). Meta waits keep their
                 # own status - the Meta queue continues those with Meta only, without another Apify run.
                 meta = outcome.message if isinstance(outcome, PlatformError) else "no result"
@@ -329,6 +380,11 @@ class VideoTracker:
                 # (each Apify attempt is billed even when the Reel is gone). A manual Retry still checks it again.
                 code = PlatformError.NOT_FOUND if apify_error.code == APIFY_NOT_FOUND else APIFY_ERROR
                 results[video_id] = PlatformError(code, f"{apify_error.message}. Meta fallback - {meta}")
+
+        for row in rows:  # still waiting for Meta after Apify failed for it earlier: keep that marker
+            outcome = results.get(row["id"])
+            if row.get("apify_tried") and isinstance(outcome, PlatformError) and outcome.code == PlatformError.RATE_LIMITED:
+                results[row["id"]] = _apify_tried(outcome)
 
         succeeded = failed = 0
         to_analyse: list[int] = []
@@ -386,6 +442,18 @@ class VideoTracker:
             videos=len(rows), succeeded=succeeded, failed=failed, duration_s=f"{time.perf_counter() - started:.1f}",
         )
         return succeeded, failed
+
+    async def _apify_batch(self, rows: list[dict], requested_at) -> tuple[dict[int, VideoMetrics | PlatformError], dict[int, str]]:
+        """Reel metrics from Apify for these rows; any failure is a per-row Apify error (Meta then takes over)."""
+        try:
+            return await self.apify.videos(rows, requested_at=requested_at)
+        except Exception as exc:
+            # SDK exceptions may include credential-bearing request details.
+            log_event(logger, logging.ERROR, "vt_apify_batch_failed", error_type=type(exc).__name__,
+                      database_error=isinstance(exc, SQLAlchemyError))
+            message = ("Apify database preparation failed; apply pending migrations with python -m alembic upgrade head "
+                       "and retry" if isinstance(exc, SQLAlchemyError) else "Apify processing failed. Retry later")
+            return {row["id"]: PlatformError(APIFY_ERROR, message) for row in rows}, {}
 
     async def _facebook_video(self, row: dict, results: dict) -> None:
         try:
