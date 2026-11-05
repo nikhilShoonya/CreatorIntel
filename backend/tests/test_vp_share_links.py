@@ -12,7 +12,8 @@ from app.config.settings import get_settings
 from app.main import app
 from app.services.llm_client import LLMClient
 from app.video_performance import queries
-from app.video_performance.platforms import FacebookVideoClient, InstagramVideoClient, YouTubeVideoClient
+from app.video_performance.facebook_apify import FacebookApifyClient
+from app.video_performance.platforms import InstagramVideoClient, YouTubeVideoClient
 from app.video_performance.sentiment import VideoSentimentAnalyzer
 from app.video_performance.share_links import (
     ShareLinkResolver,
@@ -154,12 +155,12 @@ def ok_youtube(request):
 @pytest.fixture(scope="module")
 def api():
     with TestClient(app) as client:
-        settings = get_settings().model_copy(update={"meta_facebook_page_id": "1361142767079677"})
+        settings = get_settings()
         mock = lambda h: httpx.AsyncClient(transport=httpx.MockTransport(h))  # noqa: E731
         app.state.video_tracker = VideoTracker(
             settings, youtube=YouTubeVideoClient(settings, client=mock(ok_youtube)),
             instagram=InstagramVideoClient(settings, client=mock(graph_offline)),
-            facebook=FacebookVideoClient(settings, client=mock(graph_offline)),
+            facebook=FacebookApifyClient(settings),  # disabled in tests: no network
             sentiment=VideoSentimentAnalyzer(settings, LLMClient(settings, client=mock(graph_offline))),
         )
         app.state.share_resolver = resolver()

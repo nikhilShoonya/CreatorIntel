@@ -177,7 +177,7 @@ export function TrendChart({
   );
 }
 
-export interface MultiSeries {
+interface MultiSeries {
   label: string;
   color: string;
   values: number[];
@@ -306,7 +306,7 @@ function niceTicks(min: number, max: number, count = 5): number[] {
   return ticks;
 }
 
-export interface DonutSegment {
+interface DonutSegment {
   label: string;
   value: number;
   color: string;

@@ -23,6 +23,7 @@ class VideoStatus:
 
     ALL = (PENDING, PROCESSING, TRACKING, PAUSED, COMPLETED, PARTIAL, FAILED, UNSUPPORTED, VIDEO_DOWN)
     ACTIVE_WORK = (PENDING, PROCESSING)
+    NO_DATA = (FAILED, UNSUPPORTED, VIDEO_DOWN)  # the last check could not read this video
     # Checked automatically by the daily refresh job (failures are retried daily).
     # Video Down is included so a video that comes back online resumes tracking.
     DAILY = (TRACKING, PARTIAL, FAILED, VIDEO_DOWN)
@@ -55,6 +56,7 @@ class VtUpload(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # The original file is deleted after the retention period; its rows stay in video_tracking_upload_rows.
     file_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    upload_type: Mapped[str] = mapped_column(String(20), default="file", server_default="file")  # file | links
 
 
 class VtUploadRow(Base):
@@ -71,6 +73,8 @@ class VtUploadRow(Base):
     username: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20))  # added | already_tracked | duplicate | invalid
     message: Mapped[str | None] = mapped_column(Text)
+    # The tracked video this row points to. Empty for invalid rows, rows saved before this existed, and removed videos.
+    video_id: Mapped[int | None] = mapped_column(ForeignKey("video_tracking_videos.id", ondelete="SET NULL"), index=True)
 
 
 class VtCreator(Base):
@@ -132,6 +136,15 @@ class VtVideo(Base):
     metrics_source: Mapped[str | None] = mapped_column(String(40))
     view_metric: Mapped[str | None] = mapped_column(String(40))
     source_metrics: Mapped[dict | None] = mapped_column(JSON)
+    # Facebook only (Apify). views_precision says how exact the view count is; metric_status has it for every metric.
+    plays: Mapped[int | None] = mapped_column(BigInteger)
+    reactions: Mapped[int | None] = mapped_column(BigInteger)
+    shares: Mapped[int | None] = mapped_column(BigInteger)
+    content_type: Mapped[str | None] = mapped_column(String(20))
+    profile_followers: Mapped[int | None] = mapped_column(BigInteger)
+    profile_page_likes: Mapped[int | None] = mapped_column(BigInteger)
+    views_precision: Mapped[str | None] = mapped_column(String(30))
+    metric_status: Mapped[dict | None] = mapped_column(JSON)
 
     sentiment: Mapped[str | None] = mapped_column(String(20), index=True)
     sentiment_confidence: Mapped[float | None] = mapped_column(Float)
@@ -163,6 +176,15 @@ class VtViewSnapshot(Base):
     view_metric: Mapped[str | None] = mapped_column(String(40))
     source_metrics: Mapped[dict | None] = mapped_column(JSON)
     source_run_id: Mapped[str | None] = mapped_column(String(32))
+    # Facebook only (Apify). views_precision says how exact the view count is; metric_status has it for every metric.
+    plays: Mapped[int | None] = mapped_column(BigInteger)
+    reactions: Mapped[int | None] = mapped_column(BigInteger)
+    shares: Mapped[int | None] = mapped_column(BigInteger)
+    content_type: Mapped[str | None] = mapped_column(String(20))
+    profile_followers: Mapped[int | None] = mapped_column(BigInteger)
+    profile_page_likes: Mapped[int | None] = mapped_column(BigInteger)
+    views_precision: Mapped[str | None] = mapped_column(String(30))
+    metric_status: Mapped[dict | None] = mapped_column(JSON)
 
     video: Mapped[VtVideo] = relationship(back_populates="history")
 
@@ -233,3 +255,23 @@ class VtApifyWork(Base):
     run_id: Mapped[str] = mapped_column(ForeignKey("video_tracking_apify_runs.id", ondelete="CASCADE"), index=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+
+class VtFacebookApifyRun(Base):
+    """Provider-job ledger for Facebook metrics, separate from Instagram's so the two monthly limits stay apart."""
+
+    __tablename__ = "video_tracking_facebook_apify_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    remote_run_id: Mapped[str | None] = mapped_column(String(100), unique=True)
+    actor_id: Mapped[str] = mapped_column(String(200))
+    month: Mapped[str] = mapped_column(String(7), index=True)  # UTC submission month
+    inputs: Mapped[list] = mapped_column(JSON)  # exact video ID + link associations
+    budget_units: Mapped[int] = mapped_column(Integer)
+    returned_items: Mapped[int | None] = mapped_column(Integer)
+    summary: Mapped[dict | None] = mapped_column(JSON)  # counts from the Actor's OUTPUT record
+    charged_events: Mapped[dict | None] = mapped_column(JSON)
+    reported_cost_usd: Mapped[float | None] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(30), index=True)  # reserved | starting | running | completed | failed | uncertain
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    message: Mapped[str | None] = mapped_column(Text)

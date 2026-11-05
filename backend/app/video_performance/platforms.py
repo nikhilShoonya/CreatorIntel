@@ -7,9 +7,7 @@ Instagram Graph API (Business Discovery):
     a Professional account's recent media, with like/comment/view counts. The API
     cannot look up an arbitrary reel by URL, so a reel is found by scanning its
     owner's recent media and matching the shortcode.
-Facebook Graph API (configured Page only):
-    videos/reels posted on META_FACEBOOK_PAGE_ID, read with a Page access token derived from the
-    System User token. Meta does not allow reading other Pages' videos without App Review.
+Facebook metrics come from Apify, not Meta: see facebook_apify.py.
 """
 
 import asyncio
@@ -24,7 +22,6 @@ import httpx
 
 from app.config.settings import Settings, get_settings
 from app.services.api_usage import (
-    record_facebook_call,
     record_instagram_call,
     record_meta_usage,
     record_youtube_call,
@@ -41,6 +38,7 @@ logger = logging.getLogger("creatorintel.video_performance.platforms")
 YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
 GRAPH_API = "https://graph.facebook.com"
 META_WAIT = "Pending - waiting for Meta's hourly limit"
+FACEBOOK_METRICS_SOURCE = "apify_facebook_metrics"
 
 
 def _meta_attempt(record, request_budget: list[int] | None = None) -> "Any":
@@ -93,6 +91,15 @@ class VideoMetrics:
     view_metric: str | None = None
     source_metrics: dict | None = None
     source_run_id: str | None = None
+    # Facebook only. Kept apart from views / likes: plays are not views and reactions are not likes.
+    plays: int | None = None
+    reactions: int | None = None
+    shares: int | None = None
+    content_type: str | None = None
+    profile_followers: int | None = None
+    profile_page_likes: int | None = None
+    views_precision: str | None = None  # how exact the Current Views figure is, e.g. exact | compact_rounded
+    metric_status: dict | None = None
 
 
 @dataclass
@@ -445,177 +452,3 @@ class InstagramVideoClient:
         profile["_scan_pages"] = pages_read
         profile["_scan_error"] = scan_error
         return profile, media
-
-# -------------------------------------------------------------------- Facebook
-_FB_VIEW_METRICS = ("total_video_views", "fb_reels_total_plays", "blue_reels_play_count")
-_FB_VIDEO_FIELDS = (
-    "id,title,description,permalink_url,created_time,length,from{id,name},"
-    "likes.summary(true).limit(0),comments.summary(true).limit(0)"
-)
-
-
-class FacebookVideoClient:
-    """Videos and reels on the configured Facebook Page.
-
-    META_ACCESS_TOKEN is the System User token. Page endpoints need a Page access token, which is derived
-    from it once (GET /{page_id}?fields=access_token), kept only in memory and re-derived if Meta rejects it.
-    Neither token is ever logged or returned to the frontend.
-    """
-
-    def __init__(self, settings: Settings | None = None, client: httpx.AsyncClient | None = None):
-        self.settings = settings or get_settings()
-        self.client = client
-        self._page_token: str | None = None
-        self._token_lock = asyncio.Lock()
-        self._concurrency = asyncio.Semaphore(4)
-
-    @property
-    def page_id(self) -> str:
-        return self.settings.meta_facebook_page_id.strip()
-
-    def _check_config(self) -> None:
-        if not self.settings.meta_access_token.strip():
-            raise PlatformError(PlatformError.CONFIG, "Meta API is not configured (META_ACCESS_TOKEN)")
-        if not self.page_id:
-            raise PlatformError(PlatformError.CONFIG, "Facebook is not configured (META_FACEBOOK_PAGE_ID)")
-
-    def _proof(self, token: str) -> dict[str, str]:
-        secret = self.settings.meta_app_secret
-        return {"appsecret_proof": hmac.new(secret.encode(), token.encode(), hashlib.sha256).hexdigest()} if secret else {}
-
-    async def _call(self, path: str, params: dict[str, Any], token: str) -> dict:
-        try:
-            return await request_json(
-                "GET", f"{GRAPH_API}/{self.settings.meta_api_version}/{path}", service="Facebook Graph API",
-                params={**params, **self._proof(token)},
-                headers={"Authorization": f"Bearer {token}"},
-                # no retry on rate-limit answers (hourly limits - an immediate retry only uses more of them)
-                client=self.client,
-                on_attempt=_meta_attempt(record_facebook_call),
-                on_response=record_meta_usage,
-            )
-        except meta_budget.MetaBudgetExhausted as exc:  # nothing was sent
-            raise meta_wait_error(exc) from exc
-        except HttpRequestError as exc:
-            error = self._translate(exc)
-            if error.code == PlatformError.RATE_LIMITED:
-                meta_budget.note_rate_limited()
-            raise error from exc
-
-    @staticmethod
-    def _translate(exc: HttpRequestError) -> PlatformError:
-        error = (exc.payload or {}).get("error", {}) if isinstance(exc.payload, dict) else {}
-        code, sub, message = error.get("code"), error.get("error_subcode"), str(error.get("message", ""))
-        if code == 190:
-            result = PlatformError(PlatformError.AUTH, "Meta access token is invalid or expired")
-        elif code in _RATE_CODES or exc.status_code == 429:
-            result = PlatformError(PlatformError.RATE_LIMITED, "Facebook API rate limit reached, try again later")
-        elif code in (10, 200, 3):
-            result = PlatformError(PlatformError.AUTH, "Facebook data unavailable with the current Meta permissions")
-        elif code == 100 and sub == 33:
-            result = PlatformError(
-                PlatformError.NOT_FOUND,
-                "Facebook video not found on your Page (deleted, private, wrong link, or posted by another Page)",
-            )
-        else:
-            result = PlatformError(PlatformError.API, f"Facebook API error: {message[:200] or exc.message}")
-        result.graph_code = code  # type: ignore[attr-defined]
-        return result
-
-    async def page_token(self, refresh: bool = False) -> str:
-        """Page access token derived from the System User token (memory only)."""
-        self._check_config()
-        async with self._token_lock:
-            if self._page_token and not refresh:
-                return self._page_token
-            try:
-                data = await self._call(self.page_id, {"fields": "access_token"}, self.settings.meta_access_token.strip())
-            except PlatformError as exc:
-                if exc.code in (PlatformError.NOT_FOUND, PlatformError.AUTH):
-                    raise PlatformError(
-                        PlatformError.AUTH,
-                        "The Meta System User cannot access the configured Facebook Page - check META_FACEBOOK_PAGE_ID "
-                        "and that the Page is assigned to the System User",
-                    ) from exc
-                raise
-            token = data.get("access_token") if isinstance(data, dict) else None
-            if not token:
-                raise PlatformError(
-                    PlatformError.AUTH,
-                    "Meta did not return a Page access token - assign the Facebook Page to the System User",
-                )
-            self._page_token = token
-            log_event(logger, logging.INFO, "vt_facebook_page_token_ready", page_id=self.page_id)
-            return token
-
-    async def _page_get(self, path: str, params: dict[str, Any]) -> dict:
-        token = await self.page_token()
-        try:
-            return await self._call(path, params, token)
-        except PlatformError as exc:
-            if getattr(exc, "graph_code", None) != 190:
-                raise
-            token = await self.page_token(refresh=True)  # derived token was revoked/rotated: get a fresh one once
-            return await self._call(path, params, token)
-
-    async def _views(self, video_id: str) -> int | None:
-        """Views/plays from video insights; None when Meta does not provide them for this video/token.
-
-        Videos report total_video_views; Reels report fb_reels_total_plays / blue_reels_play_count instead,
-        so those are tried only when the first metric returns nothing.
-        """
-        for metric_name in _FB_VIEW_METRICS:
-            try:
-                data = await self._page_get(f"{video_id}/video_insights", {"metric": metric_name})
-            except PlatformError as exc:
-                if exc.code == PlatformError.RATE_LIMITED:
-                    raise
-                log_event(logger, logging.INFO, "vt_facebook_views_unavailable", video_id=video_id,
-                          metric=metric_name, reason=exc.code)
-                continue
-            for metric in data.get("data") or []:
-                values = metric.get("values") or []
-                value = _int(values[-1].get("value")) if values else None
-                if metric.get("name") == metric_name and value is not None:
-                    return value
-        return None
-
-    async def video(self, video_id: str) -> VideoMetrics:
-        self._check_config()
-        async with self._concurrency:
-            try:
-                data = await self._page_get(video_id, {"fields": _FB_VIDEO_FIELDS})
-            except PlatformError as exc:
-                if getattr(exc, "graph_code", None) in (10, 200):
-                    # The Page token works (it was just derived), so a permission error here means the video is
-                    # not on our Page - Meta does not allow reading other Pages' videos (verified live).
-                    raise PlatformError(
-                        PlatformError.UNSUPPORTED,
-                        "This video is not on your Facebook Page. Meta only allows reading videos and reels posted "
-                        "on the configured Page",
-                    ) from exc
-                raise
-            owner = data.get("from") or {}
-            if owner.get("id") and str(owner["id"]) != self.page_id:
-                raise PlatformError(
-                    PlatformError.UNSUPPORTED,
-                    f"This video belongs to another Facebook Page ({owner.get('name') or owner['id']}). "
-                    "Only videos on your configured Page can be tracked",
-                )
-            views = await self._views(video_id)
-        metrics = VideoMetrics(
-            identifier=str(data.get("id") or video_id),
-            views=views,
-            likes=_int(((data.get("likes") or {}).get("summary") or {}).get("total_count")),
-            comments=_int(((data.get("comments") or {}).get("summary") or {}).get("total_count")),
-            title=data.get("title") or None,
-            caption=data.get("description") or None,
-            published_at=_dt(data.get("created_time")),
-            channel_id=str(owner["id"]) if owner.get("id") else None,
-            channel_title=owner.get("name"),
-        )
-        if views is None:
-            metrics.notes.append("Facebook did not return a view count for this video (video insights unavailable)")
-        if metrics.likes is None:
-            metrics.notes.append("Likes are not available for this video")
-        return metrics

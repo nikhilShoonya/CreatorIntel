@@ -1,4 +1,4 @@
-"""Excel/CSV import for Video Performance (Creator Name, Platform, Video Link [, Username])."""
+"""Excel/CSV import for Video Performance (Creator Name, Platform, Video Link [, Username]) and pasted lists of links."""
 
 import csv
 import io
@@ -10,12 +10,13 @@ import pandas as pd
 from openpyxl import load_workbook
 
 from app.utils.text import clean_text
-from app.video_performance.share_links import ShareResolution, resolution_note
+from app.video_performance.share_links import ShareResolution, is_share_link, resolution_note
 from app.video_performance.urls import ParsedVideo, parse_instagram_handle, parse_video_link
 
 ALLOWED = {".xlsx", ".xls", ".csv"}
 MAX_ROWS = 2000
 HEADER_SEARCH_ROWS = 10
+MAX_LINK_TEXT_CHARS = 2_000_000
 
 _LINK = {"videolink", "videourl", "link", "url", "reellink", "reelurl", "video", "postlink", "posturl", "videos",
          "instagramreelurl", "instagramreellink", "igreelurl", "igreellink", "instagramreelshortcode"}
@@ -226,3 +227,114 @@ def parse_import(
     if not result.rows:
         raise ImportError_("The file does not contain any video rows")
     return result
+
+
+# ------------------------------------------------------------------ pasted links
+_LINK_SEPARATORS = re.compile(r"[\s,;|]+|(?=https?://)", re.I)
+_CELL_SEPARATORS = re.compile(r"[\t,;|]+")
+_SCHEME_LESS_URL = re.compile(r"(?:www\.|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/)", re.I)
+_INVISIBLE = str.maketrans("", "", "﻿​‌‍⁠")
+_WRAPPING = "\"'<>()[]{}"
+_TRAILING = _WRAPPING + ".:!?"
+_HEADER_CELLS = _LINK | _CREATOR | _PLATFORM | _OWNER
+
+
+def _looks_like_url(token: str) -> bool:
+    return "://" in token or bool(_SCHEME_LESS_URL.match(token))
+
+
+def extract_links(text: str) -> list[str]:
+    """The links in pasted text, in order: one per line, or any mix of tabs, spaces, commas and table cells.
+
+    Other cells of a line that has a link (titles, names, numbers) are dropped. A line with no link is kept
+    whole so it is reported as invalid instead of vanishing, unless it is a table's header.
+    """
+    entries: list[str] = []
+    first_line = True
+    for line in text.translate(_INVISIBLE).splitlines():
+        tokens = [t.lstrip(_WRAPPING).rstrip(_TRAILING) for t in _LINK_SEPARATORS.split(line)]
+        tokens = [t for t in tokens if t]
+        if not tokens:
+            continue
+        links = [t for t in tokens if _looks_like_url(t)]
+        if links:
+            entries.extend(links)
+        else:
+            known_header = all(_key(cell) in _HEADER_CELLS for cell in _CELL_SEPARATORS.split(line.strip()) if cell.strip())
+            if not known_header and not (first_line and "\t" in line.strip()):
+                entries.append(" ".join(line.split()))
+        first_line = False
+    return entries
+
+
+def parse_link_batch(text: str, resolutions: dict[str, ShareResolution] | None = None) -> ImportResult:
+    """Read and validate pasted links as import rows. `resolutions` maps Facebook share links to their real video link."""
+    if len(text) > MAX_LINK_TEXT_CHARS:
+        raise ImportError_("The pasted text is too long. Split it into smaller batches.")
+    entries = extract_links(text)
+    if not entries:
+        raise ImportError_("No video links found. Paste at least one YouTube, Instagram or Facebook link.")
+    if len(entries) > MAX_ROWS:
+        raise ImportError_(f"There are more than {MAX_ROWS} links. Split them into smaller batches.")
+
+    result = ImportResult()
+    seen: set[tuple[str, str]] = set()
+    for number, entry in enumerate(entries, start=1):
+        link = entry[:2048]
+        resolution = (resolutions or {}).get(link)
+        parsed = parse_video_link(resolution.resolved_url if resolution and resolution.resolved_url else link)
+        row = ImportRow(number, None, parsed, parsed.owner_username, raw_link=link)
+        if not parsed.ok:
+            row.status, row.message = "invalid", (resolution.error if resolution and resolution.error else parsed.error)
+        else:
+            notes = [resolution_note(parsed.url)] if resolution and resolution.resolved_url else []
+            key = (parsed.platform, parsed.identifier)
+            if key in seen:
+                row.status = "duplicate"
+                notes.insert(0, "Duplicate of an earlier link in this batch")
+            row.message = "; ".join(notes) or None
+            seen.add(key)
+        result.rows.append(row)
+    return result
+
+
+@dataclass
+class InvalidLink:
+    link: str
+    message: str
+
+
+@dataclass
+class LinkPreview:
+    detected: int = 0
+    valid: int = 0
+    duplicates: int = 0
+    invalid: int = 0
+    platforms: dict[str, int] = field(default_factory=dict)  # valid, unique links per detected platform
+    invalid_links: list[InvalidLink] = field(default_factory=list)
+
+
+def preview_link_batch(text: str) -> LinkPreview:
+    """What pasted text would upload, read by the same parser and without saving or fetching anything.
+
+    A Facebook share link only reveals its video when it is resolved over the network on upload, so here it
+    counts as a valid Facebook link and duplicates of it are found on the link text.
+    """
+    preview = LinkPreview()
+    share_links: set[str] = set()
+    for row in parse_link_batch(text).rows:
+        preview.detected += 1
+        platform = row.parsed.platform
+        if is_share_link(row.raw_link):
+            platform = "facebook"
+            row.status = "duplicate" if row.raw_link in share_links else "pending"
+            share_links.add(row.raw_link)
+        if row.status == "invalid":
+            preview.invalid += 1
+            preview.invalid_links.append(InvalidLink(row.raw_link, row.message))
+        elif row.status == "duplicate":
+            preview.duplicates += 1
+        else:
+            preview.valid += 1
+            preview.platforms[platform] = preview.platforms.get(platform, 0) + 1
+    return preview

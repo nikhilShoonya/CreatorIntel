@@ -16,7 +16,7 @@ from app.services.http_client import HttpRequestError
 from app.utils.time import utcnow
 from app.video_performance import repository as repo
 from app.video_performance.models import VideoStatus, VtVideo, VtViewSnapshot
-from app.video_performance.platforms import FacebookVideoClient, InstagramVideoClient, PlatformError
+from app.video_performance.platforms import InstagramVideoClient, PlatformError
 
 VIEWER_ERROR = {"error": {"code": 100, "error_subcode": 33,
                           "message": "Unsupported get request. Object with ID '17841418672730174' does not exist"}}
@@ -36,34 +36,6 @@ def test_instagram_viewer_not_reachable_is_one_clear_token_error():
     collector = InstagramCollector(get_settings())
     collected = collector._translate_error(HttpRequestError("x", status_code=400, payload=VIEWER_ERROR))
     assert "cannot access your Instagram Business account" in collected.message
-
-
-def test_facebook_reel_views_fall_back_to_reel_metrics():
-    def graph(request: httpx.Request):
-        path = request.url.path
-        if path.endswith("/1361142767079677") and request.url.params.get("fields") == "access_token":
-            return httpx.Response(200, json={"access_token": "EAApage"})
-        if path.endswith("/video_insights"):
-            metric = request.url.params["metric"]
-            if metric == "total_video_views":  # Reels do not report this metric
-                return httpx.Response(200, json={"data": []})
-            return httpx.Response(200, json={"data": [{"name": metric, "values": [{"value": 4321}]}]})
-        return httpx.Response(200, json={"id": "555555555555555", "from": {"id": "1361142767079677", "name": "CreatorIntel"},
-                                         "likes": {"summary": {"total_count": 3}}, "comments": {"summary": {"total_count": 1}}})
-
-    settings = get_settings().model_copy(update={"meta_access_token": "EAAsystem", "meta_facebook_page_id": "1361142767079677"})
-    metrics = asyncio.run(FacebookVideoClient(settings, client=httpx.AsyncClient(transport=httpx.MockTransport(graph)))
-                          .video("555555555555555"))
-    assert metrics.views == 4321 and metrics.notes == []
-
-
-def test_facebook_calls_are_counted_with_instagram(api):
-    api_usage.flush()
-    before = api_usage.instagram_usage().facebook_calls_today
-    api_usage.record_facebook_call()
-    api_usage.record_facebook_call()
-    assert api_usage.instagram_usage().facebook_calls_today == before + 2
-    assert api.get("/api/config/api-usage").json()["instagram"]["facebook_calls_today"] == before + 2
 
 
 def test_long_down_videos_stop_daily_checks_and_status_counts(api):

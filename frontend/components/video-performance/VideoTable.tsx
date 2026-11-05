@@ -240,11 +240,12 @@ export function VideoTable({ uploadId, initialSort, initialStatus, refreshToken,
               ? "Try a different search or clear the filters."
               : uploadId
                 ? "Its rows were invalid, or its videos were removed from tracking."
-                : "Upload a video list, add a video, or track a creator to start."
+                : "Use Upload Videos to add your first video."
           }
         />
       ) : (
-        <div className={`table-scroll overflow-auto border-t border-line ${uploadId ? "max-h-[55vh]" : "max-h-[68vh]"}`}>
+        // Inside the File data dialog (90vh tall) the table takes what its header, totals and pagination leave free.
+        <div className={`table-scroll overflow-auto border-t border-line ${uploadId ? "max-h-[max(14rem,calc(90vh-23rem))]" : "max-h-[68vh]"}`}>
           <table className="w-full min-w-[1500px] border-separate border-spacing-0 text-sm">
             <thead className="sticky top-0 z-20 text-left text-xs font-semibold text-slate-600">
               <tr>
@@ -396,6 +397,10 @@ function SortTh({
 const td = "border-b border-line px-4 py-3 align-middle";
 const NA = <span className="text-slate-400">N/A</span>;
 
+function Approx() {
+  return <span title="Rounded public figure, such as 3.3M: not an exact count">≈</span>;
+}
+
 function VideoRow({
   index,
   video,
@@ -451,19 +456,19 @@ function VideoRow({
         {video.creator_name ?? NA}
       </td>
       <td className={`${td} text-center font-semibold tabular-nums text-ink group-hover:bg-slate-50`} title={video.current_views?.toLocaleString("en-US")}>
-        {video.current_views === null ? NA : formatNumber(video.current_views)}
+        {video.current_views === null ? NA : <>{video.views_approximate && <Approx />}{formatNumber(video.current_views)}</>}
       </td>
       <td className={`${td} text-center tabular-nums text-slate-600 group-hover:bg-slate-50`}>
         {video.previous_views === null ? <span className="text-slate-400">-</span> : formatNumber(video.previous_views)}
       </td>
       <td className={`${td} text-center tabular-nums group-hover:bg-slate-50 ${growthTone(video.views_gained)}`}>
-        {video.views_gained === null ? <span className="text-slate-400">-</span> : formatSigned(video.views_gained)}
+        {video.views_gained === null ? <span className="text-slate-400">-</span> : <>{video.views_gained_approximate && <Approx />}{formatSigned(video.views_gained)}</>}
       </td>
       <td className={`${td} text-center tabular-nums group-hover:bg-slate-50 ${growthTone(video.growth_pct)}`}>
-        {video.growth_pct === null ? <span className="text-slate-400">-</span> : formatGrowth(video.growth_pct)}
+        {video.growth_pct === null ? <span className="text-slate-400">-</span> : <>{video.views_gained_approximate && <Approx />}{formatGrowth(video.growth_pct)}</>}
       </td>
       <td className={`${td} text-center tabular-nums group-hover:bg-slate-50`} title={video.engagement_basis ? "(likes + comments) / views" : undefined}>
-        {video.engagement_rate === null ? NA : formatPercent(video.engagement_rate)}
+        {video.engagement_rate === null ? NA : <>{video.views_approximate && <Approx />}{formatPercent(video.engagement_rate)}</>}
       </td>
       <td className={`${td} group-hover:bg-slate-50`}>
         <VpSentimentBadge sentiment={video.sentiment} confidence={video.sentiment_confidence} />

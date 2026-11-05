@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { Clock3, Download, FileSpreadsheet, FileText, Loader2, MoreVertical, Pencil, RefreshCw, Trash2, Upload } from "lucide-react";
+import { Clock3, Download, FileSpreadsheet, FileText, Link2, Loader2, MoreVertical, Pencil, RefreshCw, Trash2, Upload } from "lucide-react";
 
 import { Button, EmptyState, ErrorBanner } from "@/components/ui/controls";
 import { ConfirmDialog, Dialog } from "@/components/ui/Dialog";
@@ -12,6 +12,8 @@ import { useApi } from "@/hooks/useApi";
 import { formatDateTime } from "@/lib/format";
 import { vpApi } from "@/lib/vpApi";
 import type { VpUpload } from "@/types/videoPerformance";
+import { BatchProblems, BatchStatusPill, batchRefreshMs } from "./BulkUploadStatus";
+import { UploadPlatformTotals } from "./UploadPlatformTotals";
 import { VideoTable } from "./VideoTable";
 
 type Toast = (tone: "success" | "error", message: string) => void;
@@ -34,16 +36,20 @@ function UploadVideosDialog({
   const tracked = useApi(upload ? `vp-upload-total:${upload.id}:${refreshToken}` : null, () => vpApi.videos({ upload_id: upload!.id }, 1, 10), {
     keepPrevious: true,
   });
-  const rows = useApi(upload && showInvalid ? `vp-upload-rows:${upload.id}` : null, () => vpApi.uploadRows(upload!.id));
+  const isBatch = upload?.upload_type === "links";
+  // A batch's list of problems changes as its videos finish.
+  const rows = useApi(upload && showInvalid ? `vp-upload-rows:${upload.id}:${upload.videos_failed}` : null, () => vpApi.uploadRows(upload!.id));
   const invalidRows = rows.data?.rows.filter((r) => r.status === "invalid") ?? [];
 
   const inFile = upload ? upload.added + upload.already_tracked : 0;
   const removed = tracked.data ? Math.max(inFile - tracked.data.total, 0) : 0;
+  const problems = upload ? upload.invalid + upload.videos_failed : 0;
 
   return (
-    <Dialog open={upload !== null} title="File data" description={upload?.filename} onClose={onClose} size="xl">
+    <Dialog open={upload !== null} title={isBatch ? "Bulk upload data" : "File data"} description={upload?.filename} onClose={onClose} size="xl">
       {upload && (
         <div className="space-y-3 pb-2">
+          <UploadPlatformTotals uploadId={upload.id} refreshToken={refreshToken} />
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-600">
             <span className="inline-flex items-center gap-1.5">
               <FileSpreadsheet size={15} className="text-emerald-600" /> Uploaded {formatDateTime(upload.created_at)}
@@ -55,28 +61,48 @@ function UploadVideosDialog({
               </span>
             )}
           </div>
-          <p className="text-sm text-slate-600">
-            <span className="font-semibold text-ink">{inFile}</span> video{inFile === 1 ? "" : "s"} in this file
-            <span className="text-muted">
-              {" "}
-              ({upload.added} newly added, {upload.already_tracked} already tracked) · {upload.total_rows} rows
-              {upload.duplicates > 0 && ` · ${upload.duplicates} duplicate row${upload.duplicates === 1 ? "" : "s"}`}
-            </span>
-            {upload.invalid > 0 && (
-              <>
-                {" · "}
+          {isBatch ? (
+            <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-slate-600">
+              <BatchStatusPill upload={upload} />
+              <span>
+                <span className="font-semibold text-ink">{inFile}</span> video{inFile === 1 ? "" : "s"} in this upload
+              </span>
+              <span className="text-muted">
+                · {upload.total_rows} links submitted · {upload.videos_processed} successful · {upload.videos_failed} failed
+                {upload.videos_in_progress > 0 && ` · ${upload.videos_in_progress} processing`}
+                {upload.duplicates > 0 && ` · ${upload.duplicates} duplicate${upload.duplicates === 1 ? "" : "s"}`}
+              </span>
+              {problems > 0 && (
                 <button type="button" onClick={() => setShowInvalid((v) => !v)} className="font-medium text-rose-700 underline-offset-2 hover:underline">
-                  {upload.invalid} invalid row{upload.invalid === 1 ? "" : "s"} (not tracked) {showInvalid ? "▲" : "▼"}
+                  · {problems} link{problems === 1 ? "" : "s"} with no data {showInvalid ? "▲" : "▼"}
                 </button>
-              </>
-            )}
-          </p>
+              )}
+            </p>
+          ) : (
+            <p className="text-sm text-slate-600">
+              <span className="font-semibold text-ink">{inFile}</span> video{inFile === 1 ? "" : "s"} in this file
+              <span className="text-muted">
+                {" "}
+                ({upload.added} newly added, {upload.already_tracked} already tracked) · {upload.total_rows} rows
+                {upload.duplicates > 0 && ` · ${upload.duplicates} duplicate row${upload.duplicates === 1 ? "" : "s"}`}
+              </span>
+              {upload.invalid > 0 && (
+                <>
+                  {" · "}
+                  <button type="button" onClick={() => setShowInvalid((v) => !v)} className="font-medium text-rose-700 underline-offset-2 hover:underline">
+                    {upload.invalid} invalid row{upload.invalid === 1 ? "" : "s"} (not tracked) {showInvalid ? "▲" : "▼"}
+                  </button>
+                </>
+              )}
+            </p>
+          )}
           {removed > 0 && (
             <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
               {removed} video{removed === 1 ? " was" : "s were"} removed from tracking after this upload, so {removed === 1 ? "it is" : "they are"} not shown.
             </p>
           )}
-          {showInvalid && (
+          {showInvalid && isBatch && (rows.data ? <BatchProblems rows={rows.data.rows} /> : <div className="h-16 animate-pulse rounded-lg bg-rose-50/50" />)}
+          {showInvalid && !isBatch && (
             <div className="overflow-hidden rounded-lg border border-rose-100">
               {rows.error && <p className="px-3 py-2 text-sm text-rose-600">{rows.error}</p>}
               {!rows.data && !rows.error && <div className="h-16 animate-pulse bg-rose-50/50" />}
@@ -188,10 +214,15 @@ export function UploadsPanel({
   const { data: metaQueue } = useMetaQueue();
   const { data, error, reload } = useApi(`vp-uploads:${refreshToken}`, () => vpApi.uploads(), {
     keepPrevious: true,
-    // follow files whose Instagram / Facebook videos are still waiting for Meta's hourly limit
-    refreshMs: (d: VpUpload[] | undefined) => (d?.some((u) => u.instagram_waiting + u.facebook_waiting > 0) ? 60_000 : false),
+    // follow batches still being processed, and files whose Instagram videos wait for Meta's hourly limit
+    refreshMs: (d: VpUpload[] | undefined) => {
+      const batchSpeeds = (d ?? []).map(batchRefreshMs).filter((ms) => ms !== false);
+      if (batchSpeeds.length > 0) return Math.min(...batchSpeeds);
+      return d?.some((u) => u.instagram_waiting > 0) ? 60_000 : false;
+    },
   });
-  const [viewing, setViewing] = useState<VpUpload | null>(null);
+  const [viewingId, setViewingId] = useState<string | null>(null);
+  const viewing = data?.find((u) => u.id === viewingId) ?? null; // always the latest counts
   const [renaming, setRenaming] = useState<VpUpload | null>(null);
   const [deleting, setDeleting] = useState<VpUpload | null>(null);
   const [alsoVideos, setAlsoVideos] = useState(false);
@@ -259,6 +290,17 @@ export function UploadsPanel({
                   <tr key={upload.id} className="hover:bg-slate-50">
                     <td className="max-w-[320px] border-b border-line px-4 py-3" title={upload.filename}>
                       <span className="block truncate font-medium text-ink">{upload.filename}</span>
+                      {upload.upload_type === "links" && (
+                        <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+                          <span className="inline-flex items-center gap-1">
+                            <Link2 size={12} aria-hidden="true" /> Pasted links
+                          </span>
+                          <BatchStatusPill upload={upload} />
+                          <span className="tabular-nums">
+                            {upload.videos_processed} successful · {upload.videos_failed} failed
+                          </span>
+                        </span>
+                      )}
                       <FileStatusText deletedAt={upload.file_deleted_at} />
                       {metaUploadProgress(upload, metaQueue) && (
                         <span className="mt-0.5 flex items-center gap-1 text-xs text-amber-700">
@@ -277,7 +319,7 @@ export function UploadsPanel({
                       <div className="flex items-center justify-end gap-1">
                         <button
                           type="button"
-                          onClick={() => setViewing(upload)}
+                          onClick={() => setViewingId(upload.id)}
                           className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-accent hover:bg-accent-soft"
                         >
                           <FileText size={15} /> View data
@@ -302,13 +344,18 @@ export function UploadsPanel({
                               icon: <RefreshCw size={15} />,
                               onSelect: () => act(() => vpApi.refreshUpload(upload.id)),
                             },
-                            {
-                              label: "Download original file",
-                              icon: <Download size={15} />,
-                              disabled: !upload.file_available,
-                              hint: upload.file_available ? undefined : "No longer stored - download the rows",
-                              onSelect: () => download(() => vpApi.downloadUploadFile(upload)),
-                            },
+                            // Pasted links never had a file to give back.
+                            ...(upload.upload_type === "links"
+                              ? []
+                              : [
+                                  {
+                                    label: "Download original file",
+                                    icon: <Download size={15} />,
+                                    disabled: !upload.file_available,
+                                    hint: upload.file_available ? undefined : "No longer stored - download the rows",
+                                    onSelect: () => download(() => vpApi.downloadUploadFile(upload)),
+                                  },
+                                ]),
                             {
                               label: "Download rows (Excel)",
                               icon: <FileSpreadsheet size={15} />,
@@ -333,7 +380,7 @@ export function UploadsPanel({
         </table>
       </div>
       {/* keyed by upload so "show invalid rows" and other dialog state start fresh for each file */}
-      <UploadVideosDialog key={viewing?.id ?? "none"} upload={viewing} onClose={() => setViewing(null)} onToast={onToast} onChanged={onChanged} />
+      <UploadVideosDialog key={viewingId ?? "none"} upload={viewing} onClose={() => setViewingId(null)} onToast={onToast} onChanged={onChanged} />
       <RenameUploadDialog
         key={`rename:${renaming?.id ?? "none"}`}
         upload={renaming}

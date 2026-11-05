@@ -2,12 +2,12 @@
 
 import { Suspense, useRef, useState, type ComponentProps } from "react";
 import { useSearchParams } from "next/navigation";
-import { FilePlus, FileSpreadsheet, ListVideo, Upload } from "lucide-react";
+import { FileSpreadsheet, ListVideo, Upload } from "lucide-react";
 
 import { Button, Card } from "@/components/ui/controls";
 import { MetaQueueBanner } from "@/components/ui/MetaQueueBanner";
 import { UploadsPanel } from "@/components/video-performance/UploadsPanel";
-import { AddVideoDialog, UploadVideosDialog } from "@/components/video-performance/dialogs";
+import { UploadVideosDialog } from "@/components/video-performance/dialogs";
 import { sortFromParam, statusFromParam, VideoTable } from "@/components/video-performance/VideoTable";
 
 type Tab = "videos" | "uploads";
@@ -16,7 +16,7 @@ type Toast = { tone: "success" | "error"; message: string } | null;
 export default function TrackingLibraryPage() {
   const [tab, setTab] = useState<Tab>("videos");
   const [refreshToken, setRefreshToken] = useState(0);
-  const [dialog, setDialog] = useState<"upload" | "video" | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const toastTimer = useRef<number | undefined>(undefined);
 
@@ -40,14 +40,9 @@ export default function TrackingLibraryPage() {
           <h1 className="text-xl font-semibold tracking-tight text-ink">Tracking Library</h1>
           <p className="text-sm text-muted">Videos are checked automatically every day - no need to upload the list again.</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button onClick={() => setDialog("upload")}>
-            <Upload size={16} /> Upload Videos
-          </Button>
-          <Button variant="primary" onClick={() => setDialog("video")}>
-            <FilePlus size={16} /> Add video
-          </Button>
-        </div>
+        <Button variant="primary" onClick={() => setUploading(true)}>
+          <Upload size={16} /> Upload Videos
+        </Button>
       </div>
 
       <MetaQueueBanner scope="videos" />
@@ -57,7 +52,7 @@ export default function TrackingLibraryPage() {
           {(
             [
               { id: "videos", label: "Tracked videos", Icon: ListVideo },
-              { id: "uploads", label: "Uploads", Icon: FileSpreadsheet },
+              { id: "uploads", label: "Uploads history", Icon: FileSpreadsheet },
             ] as const
           ).map(({ id, label, Icon }) => (
             <button
@@ -82,13 +77,12 @@ export default function TrackingLibraryPage() {
             </Suspense>
           )}
           {tab === "uploads" && (
-            <UploadsPanel refreshToken={refreshToken} onToast={showToast} onChanged={bump} onUpload={() => setDialog("upload")} />
+            <UploadsPanel refreshToken={refreshToken} onToast={showToast} onChanged={bump} onUpload={() => setUploading(true)} />
           )}
         </div>
       </Card>
 
-      <UploadVideosDialog open={dialog === "upload"} onClose={() => setDialog(null)} onDone={bump} />
-      <AddVideoDialog open={dialog === "video"} onClose={() => setDialog(null)} onSaved={saved} />
+      <UploadVideosDialog open={uploading} onClose={() => setUploading(false)} onDone={bump} onSaved={saved} />
 
       {toast && (
         <div

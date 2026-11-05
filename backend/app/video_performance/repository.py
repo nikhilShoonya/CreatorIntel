@@ -23,7 +23,7 @@ from app.video_performance.models import (
     VtViewSnapshot,
 )
 from app.services import meta_budget
-from app.video_performance.platforms import META_WAIT, ChannelInfo, DiscoveredVideo, PlatformError, VideoMetrics
+from app.video_performance.platforms import FACEBOOK_METRICS_SOURCE, META_WAIT, ChannelInfo, DiscoveredVideo, PlatformError, VideoMetrics
 from app.video_performance.sentiment import SentimentResult
 from app.video_performance.timeutil import local_day_start_utc, tracking_tz
 from app.video_performance.urls import ParsedVideo, parse_instagram_handle, parse_video_link
@@ -235,6 +235,29 @@ def repair_outdated_counts() -> int:
     return repaired
 
 
+def repair_facebook_after_apify_switch() -> int:
+    """Facebook videos left behind by the Graph API: its "not on your Page" verdicts no longer hold, and nothing should
+    wait for Meta. They become Failed with a clear note, so Retry or the daily job reads them. Never starts a run itself."""
+    note = "Not read yet by the Facebook Apify scraper. Use Retry to fetch it now"
+    with session_scope() as db:
+        videos = db.scalars(select(VtVideo).where(
+            VtVideo.platform == "facebook",
+            or_(
+                (VtVideo.status == VideoStatus.UNSUPPORTED) & VtVideo.status_reason.like("%Facebook Page%"),
+                (VtVideo.status == VideoStatus.PENDING) & VtVideo.status_reason.like(f"{META_WAIT}%"),
+            ),
+        )).all()
+        for video in videos:
+            video.status = VideoStatus.TRACKING if video.current_views is not None else VideoStatus.FAILED
+            video.status_reason = note
+        return len(videos)
+
+
+def facebook_video_ids(video_ids: list[int]) -> list[int]:
+    with read_scope() as db:
+        return list(db.scalars(select(VtVideo.id).where(VtVideo.id.in_(video_ids), VtVideo.platform == "facebook").order_by(VtVideo.id)))
+
+
 def repair_temporary_failures() -> list[int]:
     """Startup repair of videos left by older versions after a rate limit:
     * Instagram / Facebook ones (Failed, or Tracking with a "Latest check failed" note) join the Meta queue:
@@ -278,6 +301,7 @@ def repair_temporary_failures() -> list[int]:
     return meta_waiting_ids()
 
 
+_PROVIDER_SOURCES = ("apify_instagram_reel", FACEBOOK_METRICS_SOURCE)  # their counts are only compared with their own
 APIFY_TRIED_NOTE = "Apify could not read it either"  # in a Meta-wait note: Apify already failed for this reel
 
 
@@ -341,7 +365,7 @@ def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
             ))
             if saved:
                 if video.status == VideoStatus.PROCESSING:
-                    partial = saved.views is None or (saved.metrics_source == "apify_instagram_reel"
+                    partial = saved.views is None or (saved.metrics_source in _PROVIDER_SOURCES
                                                       and (saved.likes is None or saved.comments is None))
                     video.status = VideoStatus.PARTIAL if partial else VideoStatus.TRACKING
                 return True  # replay must not duplicate a snapshot or leave the claimed row Processing
@@ -359,7 +383,7 @@ def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
                 video.creator_id = None
             metrics.owner_username = owner
         comparable = ()
-        if metrics.metrics_source == "apify_instagram_reel":
+        if metrics.metrics_source in _PROVIDER_SOURCES:
             comparable = (VtViewSnapshot.metrics_source == metrics.metrics_source,
                           VtViewSnapshot.view_metric == metrics.view_metric)
         elif video.metrics_source == "apify_instagram_reel":
@@ -390,6 +414,9 @@ def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
                 comments=metrics.comments, engagement_rate=rate,
                 metrics_source=metrics.metrics_source, view_metric=metrics.view_metric,
                 source_metrics=metrics.source_metrics, source_run_id=metrics.source_run_id,
+                plays=metrics.plays, reactions=metrics.reactions, shares=metrics.shares, content_type=metrics.content_type,
+                profile_followers=metrics.profile_followers, profile_page_likes=metrics.profile_page_likes,
+                views_precision=metrics.views_precision, metric_status=metrics.metric_status,
             )
         )
         video.title = metrics.title or video.title
@@ -408,7 +435,19 @@ def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
 
         _apply_counts(video, kept(metrics.views, video.current_views), kept(metrics.likes, video.likes),
                       kept(metrics.comments, video.comments),
-                      rate if metrics.metrics_source == "apify_instagram_reel" else kept(rate, video.engagement_rate), previous)
+                      rate if metrics.metrics_source in _PROVIDER_SOURCES else kept(rate, video.engagement_rate), previous)
+        if metrics.metrics_source == FACEBOOK_METRICS_SOURCE:
+            for name in ("plays", "reactions", "shares", "content_type", "profile_followers", "profile_page_likes"):
+                setattr(video, name, kept(getattr(metrics, name), getattr(video, name)))
+            if metrics.views is not None:
+                video.views_precision = metrics.views_precision
+            # Views Gained is only as exact as both figures it comes from.
+            previous_precision = previous is not None and db.scalar(
+                select(VtViewSnapshot.views_precision)
+                .where(VtViewSnapshot.video_id == video_id, VtViewSnapshot.views == previous, *comparable)
+                .order_by(VtViewSnapshot.captured_at.desc()).limit(1)
+            ) or None
+            video.metric_status = {**(metrics.metric_status or {}), "previous_views_precision": previous_precision}
         video.last_checked_at = now
 
         # A retained older count keeps its provider/metric label when the new count is missing.
@@ -425,7 +464,7 @@ def save_metrics(video_id: int, metrics: VideoMetrics) -> bool:
             notes.insert(0, "View count is not available from the API for this video")
         if video.status != VideoStatus.PAUSED:
             video.status = VideoStatus.PARTIAL if (metrics.views is None or (
-                metrics.metrics_source == "apify_instagram_reel" and (metrics.likes is None or metrics.comments is None)
+                metrics.metrics_source in _PROVIDER_SOURCES and (metrics.likes is None or metrics.comments is None)
             )) else VideoStatus.TRACKING
         video.status_reason = "; ".join(notes) or None
         return True
@@ -451,7 +490,7 @@ def _temporary_note(error: PlatformError, last_ok: datetime | None) -> str:
     return f"Latest check failed ({error.message}) - showing the numbers from {when}; {RETRY_NOTE}"
 
 
-META_PLATFORMS = ("instagram", "facebook")
+META_PLATFORMS = ("instagram",)  # Facebook metrics come from Apify, so they never wait for Meta's hourly limit
 
 
 def meta_wait_note(error: PlatformError, last_ok: datetime | None = None) -> str:
@@ -1095,7 +1134,7 @@ def forget_owner_search(shortcodes: list[str]) -> None:
             row.details = {k: v for k, v in row.details.items() if k not in shortcodes}
 
 
-def _import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, list[int]]:
+def _import_rows(filename: str, stored: str | None, rows: list, upload_type: str) -> tuple[str, list[int]]:
     """Record an upload, add videos, and recover ownerless records. Return IDs needing processing."""
     from app.video_performance.models import VtUpload, VtUploadRow
 
@@ -1106,7 +1145,7 @@ def _import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, li
             conditions = [and_(VtVideo.platform == r.parsed.platform, VtVideo.video_identifier == r.parsed.identifier)
                           for r in candidates[start:start + 100]]
             tracked.update({(v.platform, v.video_identifier): v for v in db.scalars(select(VtVideo).where(or_(*conditions)))})
-        upload = VtUpload(filename=filename, stored_filename=stored, total_rows=len(rows))
+        upload = VtUpload(filename=filename, stored_filename=stored, total_rows=len(rows), upload_type=upload_type)
         db.add(upload)
         db.flush()
         new_videos = []
@@ -1161,6 +1200,7 @@ def _import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, li
                 existing = tracked.get((row.parsed.platform, row.parsed.identifier))
                 if existing is not None and _enrich_import_owner(db, existing, row):
                     recovered.append(existing.id)
+        video_ids = {(v.platform, v.video_identifier): v.id for v in (*tracked.values(), *new_videos)}
         db.add_all(
             VtUploadRow(
                 upload_id=upload.id,
@@ -1171,6 +1211,7 @@ def _import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, li
                 username=r.owner_username,
                 status=r.status,
                 message=r.message,
+                video_id=None if r.status == "invalid" else video_ids.get((r.parsed.platform, r.parsed.identifier)),
             )
             for r in rows
         )
@@ -1200,10 +1241,10 @@ def add_video(
         raise Conflict("This video is already being tracked") from exc
 
 
-def import_rows(filename: str, stored: str | None, rows: list) -> tuple[str, list[int]]:
+def import_rows(filename: str, stored: str | None, rows: list, upload_type: str = "file") -> tuple[str, list[int]]:
     for attempt in (1, 2):
         try:
-            return _import_rows(filename, stored, rows)
+            return _import_rows(filename, stored, rows, upload_type)
         except IntegrityError:
             if attempt == 2:
                 raise

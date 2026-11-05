@@ -22,6 +22,7 @@ os.environ.update(
         "META_APP_SECRET": "test-app-secret",
         "APIFY_API_TOKEN": "",
         "APIFY_INSTAGRAM_REEL_ENABLED": "false",
+        "APIFY_FACEBOOK_ENABLED": "false",
         "META_IG_BUSINESS_ACCOUNT_ID": "17840000000000000",
         "GROQ_API_KEY": "test-groq-key",
         # never pick up real numbered keys from backend/.env in tests

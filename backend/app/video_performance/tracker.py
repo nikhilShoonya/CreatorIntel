@@ -26,12 +26,12 @@ from app.video_performance import apify_repository as apify_jobs
 from app.video_performance.apify_reels import (
     ApifyReelClient, BUSY as APIFY_BUSY, ERROR as APIFY_ERROR, NOT_FOUND as APIFY_NOT_FOUND,
 )
+from app.video_performance.facebook_apify import FacebookApifyClient
 from app.video_performance.models import JobType, VideoStatus
 from app.video_performance.platforms import (
     META_WAIT,
     ChannelInfo,
     DiscoveredVideo,
-    FacebookVideoClient,
     InstagramMedia,
     InstagramVideoClient,
     PlatformError,
@@ -117,14 +117,14 @@ class VideoTracker:
         *,
         youtube: YouTubeVideoClient | None = None,
         instagram: InstagramVideoClient | None = None,
-        facebook: FacebookVideoClient | None = None,
+        facebook: FacebookApifyClient | None = None,
         sentiment: VideoSentimentAnalyzer | None = None,
         apify: ApifyReelClient | None = None,
     ):
         self.settings = settings or get_settings()
         self.youtube = youtube or YouTubeVideoClient(self.settings)
         self.instagram = instagram or InstagramVideoClient(self.settings)
-        self.facebook = facebook or FacebookVideoClient(self.settings)
+        self.facebook = facebook or FacebookApifyClient(self.settings)
         self.sentiment = sentiment or VideoSentimentAnalyzer(self.settings)
         self.apify = apify or ApifyReelClient(self.settings)
         self._job_locks = {JobType.METRICS_REFRESH: asyncio.Lock(), JobType.CREATOR_DISCOVERY: asyncio.Lock()}
@@ -232,6 +232,10 @@ class VideoTracker:
             await asyncio.to_thread(repo.repair_temporary_failures)
         except Exception:
             logger.exception("vt_repair_temporary_failures_failed")
+        try:  # Facebook videos judged by the old Graph API can now be read (never starts a paid run by itself)
+            await asyncio.to_thread(repo.repair_facebook_after_apify_switch)
+        except Exception:
+            logger.exception("vt_repair_facebook_failed")
         video_ids = await asyncio.to_thread(repo.recover_after_restart)
         if video_ids:
             log_event(logger, logging.INFO, "vt_resume", videos=len(video_ids))
@@ -242,7 +246,8 @@ class VideoTracker:
         """Fetch + store metrics for the given videos. Returns (succeeded, failed).
 
         ``on_done`` is called once per video when its result has been saved (used for job progress).
-        Instagram / Facebook videos that do not fit Meta's hourly limit wait in the Meta queue (Pending).
+        Instagram videos that do not fit Meta's hourly limit wait in the Meta queue (Pending).
+        Facebook videos go to Apify batch by batch, each saved when its Actor run finishes, without holding up the others.
         """
         # Skip videos another task is already checking (e.g. "Refresh now" during the daily job).
         requested_at = utcnow()
@@ -254,9 +259,32 @@ class VideoTracker:
             return 0, 0
         self._in_flight.update(wanted)
         try:
-            return await self._process_videos(wanted, on_done, requested_at)
+            facebook = await asyncio.to_thread(repo.facebook_video_ids, wanted)
+            if not facebook:
+                return await self._process_videos(wanted, on_done, requested_at)
+            others = sorted(set(wanted) - set(facebook))
+            work = [self._process_facebook(facebook, on_done, requested_at)]
+            if others:
+                work.append(self._process_videos(others, on_done, requested_at))
+            outcomes = await asyncio.gather(*work, return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+            return sum(o[0] for o in outcomes), sum(o[1] for o in outcomes)
         finally:
             self._in_flight.difference_update(wanted)
+
+    async def _process_facebook(self, video_ids: list[int], on_done: Callable[[], None] | None, requested_at) -> tuple[int, int]:
+        """One Actor run per batch. A batch that crashes does not stop the batches after it."""
+        size = self.settings.apify_facebook_batch_size
+        succeeded = failed = 0
+        for start in range(0, len(video_ids), size):
+            try:
+                ok, bad = await self._process_videos(video_ids[start:start + size], on_done, requested_at)
+                succeeded, failed = succeeded + ok, failed + bad
+            except Exception:
+                logger.exception("vt_facebook_batch_crashed")
+        return succeeded, failed
 
     async def _process_videos(self, video_ids: list[int], on_done: Callable[[], None] | None = None, requested_at=None) -> tuple[int, int]:
         started = time.perf_counter()
@@ -343,7 +371,7 @@ class VideoTracker:
 
         facebook_rows = [r for r in rows if r["platform"] == "facebook"]
         if facebook_rows:
-            await asyncio.gather(*(self._facebook_video(row, results) for row in facebook_rows))
+            results.update(await self._facebook_batch(facebook_rows))
 
         # Apify backup for Meta-first reels Meta could not read (paused mid-run, not on the owner's posts, API error).
         backup = [r for r in rows if r["id"] in meta_first and not isinstance(results.get(r["id"]), VideoMetrics)]
@@ -455,21 +483,17 @@ class VideoTracker:
                        "and retry" if isinstance(exc, SQLAlchemyError) else "Apify processing failed. Retry later")
             return {row["id"]: PlatformError(APIFY_ERROR, message) for row in rows}, {}
 
-    async def _facebook_video(self, row: dict, results: dict) -> None:
+    async def _facebook_batch(self, rows: list[dict]) -> dict[int, VideoMetrics | PlatformError]:
+        """Metrics from Apify for these rows; a failure of the whole batch becomes a per-row error (stored numbers stay)."""
         try:
-            results[row["id"]] = await self.facebook.video(row["identifier"])
-        except PlatformError as exc:
-            if exc.code == PlatformError.NOT_FOUND and not row.get("seen"):
-                # Never seen before: the ID may simply not be on our Page (Meta returns the same error).
-                exc = PlatformError(
-                    PlatformError.UNSUPPORTED,
-                    "Facebook video could not be resolved with the configured Page/API access. Only videos posted "
-                    "on your Facebook Page can be tracked (or the video is deleted/private)",
-                )
-            results[row["id"]] = exc
-        except Exception:
-            logger.exception("vt_facebook_video_crashed video_id=%s", row["id"])
-            results[row["id"]] = PlatformError(PlatformError.API, "Unexpected error while contacting Facebook")
+            return await self.facebook.videos(rows)
+        except Exception as exc:
+            # Exceptions may include credential-bearing request details: log only their type.
+            log_event(logger, logging.ERROR, "vt_facebook_batch_failed", error_type=type(exc).__name__,
+                      database_error=isinstance(exc, SQLAlchemyError))
+            message = ("Facebook Apify database preparation failed; apply pending migrations with python -m alembic upgrade head "
+                       "and retry" if isinstance(exc, SQLAlchemyError) else "Facebook Apify processing failed. Retry later")
+            return {row["id"]: PlatformError(PlatformError.API, message) for row in rows}
 
     async def _instagram_owner(
         self, owner: str | None, rows: list[dict], results: dict, scanned: dict[str, list[InstagramMedia]] | None = None,

@@ -26,6 +26,8 @@ from app.video_performance.repository import STALE_COUNT_WINDOW, is_outdated_cou
 from app.video_performance.schemas import (
     CreatorOut,
     GroupSentiment,
+    EXACT_VIEW_PRECISIONS,
+    PlatformViewsOut,
     RecentSentiment,
     SentimentCounts,
     SnapshotOut,
@@ -41,6 +43,7 @@ from app.video_performance.urls import parse_video_link
 
 SortKey = Literal["current_views", "views_gained", "growth_pct", "engagement_rate", "last_checked_at", "created_at", "published_at"]
 _ACTIVE = (VideoStatus.PENDING, VideoStatus.PROCESSING, VideoStatus.TRACKING, VideoStatus.PARTIAL, VideoStatus.FAILED)
+UPLOAD_TOTAL_PLATFORMS = ("youtube", "instagram", "facebook")
 
 
 @dataclass
@@ -163,6 +166,9 @@ def history(video_id: int) -> list[SnapshotOut]:
                 captured_at=snap.captured_at, views=snap.views, likes=snap.likes, comments=snap.comments,
                 engagement_rate=snap.engagement_rate, views_change=change, outdated=outdated,
                 metrics_source=snap.metrics_source, view_metric=snap.view_metric, source_metrics=snap.source_metrics,
+                plays=snap.plays, reactions=snap.reactions, shares=snap.shares, content_type=snap.content_type,
+                profile_followers=snap.profile_followers, profile_page_likes=snap.profile_page_likes,
+                views_precision=snap.views_precision, metric_status=snap.metric_status,
             )
         )
         if not outdated:
@@ -200,63 +206,140 @@ def _upload_out(upload: VtUpload) -> UploadOut:
 
 
 def _meta_progress(db, outs: list[UploadOut]) -> list[UploadOut]:
-    """Per upload: Instagram / Facebook videos it added and how many still wait for Meta's hourly limit
+    """Per upload: Instagram videos it added and how many still wait for Meta's hourly limit
     (one grouped query for all uploads)."""
     if not outs:
         return outs
     waiting = case((and_(VtVideo.status == VideoStatus.PENDING, VtVideo.status_reason.like(f"{META_WAIT}%")), 1), else_=0)
     rows = db.execute(
-        select(VtVideo.upload_id, VtVideo.platform, func.count(), func.sum(waiting))
-        .where(VtVideo.upload_id.in_([o.id for o in outs]), VtVideo.platform.in_(("instagram", "facebook")))
-        .group_by(VtVideo.upload_id, VtVideo.platform)
+        select(VtVideo.upload_id, func.count(), func.sum(waiting))
+        .where(VtVideo.upload_id.in_([o.id for o in outs]), VtVideo.platform == "instagram")
+        .group_by(VtVideo.upload_id)
     ).all()
     by_id = {o.id: o for o in outs}
-    for upload_id, platform, total, waiting_count in rows:
-        setattr(by_id[upload_id], f"{platform}_total", int(total))
-        setattr(by_id[upload_id], f"{platform}_waiting", int(waiting_count or 0))
+    for upload_id, total, waiting_count in rows:
+        by_id[upload_id].instagram_total = int(total)
+        by_id[upload_id].instagram_waiting = int(waiting_count or 0)
     return outs
+
+
+def _batch_status(out: UploadOut) -> str:
+    if out.videos_in_progress:
+        return "processing"
+    if out.videos_processed == 0 and (out.videos_failed or out.invalid):
+        return "failed"
+    return "partial" if out.videos_failed or out.invalid else "completed"
+
+
+def _batch_progress(db, outs: list[UploadOut]) -> list[UploadOut]:
+    """Per batch of pasted links: where its unique videos stand now (one grouped query for all batches)."""
+    batches = {o.id: o for o in outs if o.upload_type == "links"}
+    if not batches:
+        return outs
+    rows = db.execute(
+        select(VtUploadRow.upload_id, VtVideo.status, func.count(VtVideo.id.distinct()))
+        .join(VtVideo, VtUploadRow.video_id == VtVideo.id)
+        .where(VtUploadRow.upload_id.in_(batches))
+        .group_by(VtUploadRow.upload_id, VtVideo.status)
+    ).all()
+    for upload_id, status, count in rows:
+        batch = batches[upload_id]
+        batch.videos_total += count
+        if status in VideoStatus.ACTIVE_WORK:
+            batch.videos_in_progress += count
+        elif status in VideoStatus.NO_DATA:
+            batch.videos_failed += count
+        else:
+            batch.videos_processed += count
+    for batch in batches.values():
+        batch.processing_status = _batch_status(batch)
+    return outs
+
+
+def _with_progress(db, outs: list[UploadOut]) -> list[UploadOut]:
+    return _batch_progress(db, _meta_progress(db, outs))
 
 
 def uploads(limit: int | None = None) -> list[UploadOut]:
     """Uploads, newest first (all of them by default - uploads are never hidden from the website)."""
     with read_scope() as db:
         outs = [_upload_out(u) for u in db.scalars(select(VtUpload).order_by(VtUpload.created_at.desc()).limit(limit))]
-        return _meta_progress(db, outs)
+        return _with_progress(db, outs)
 
 
 def upload(upload_id: str) -> UploadOut | None:
     with read_scope() as db:
         found = db.get(VtUpload, upload_id)
-        return _meta_progress(db, [_upload_out(found)])[0] if found else None
+        return _with_progress(db, [_upload_out(found)])[0] if found else None
 
 
 def upload_video_ids(upload_id: str) -> list[int] | None:
-    """Tracked videos that came from one uploaded file, in the file's row order (None = unknown upload).
+    """Tracked videos that came from one upload, in its row order (None = unknown upload).
 
-    Rows keep the link exactly as uploaded, so each is matched to its video the same way the upload
-    matched it (added, already tracked or a duplicate row all point to the same tracked video).
+    A row points to its video through video_id. Rows without one (saved before video_id existed, or whose
+    video was removed) are matched by their link, the same way the upload matched it (added, already tracked
+    or a duplicate row all point to the same tracked video).
     """
     with read_scope() as db:
         if db.get(VtUpload, upload_id) is None:
             return None
         rows = db.execute(
-            select(VtUploadRow.video_link, VtUploadRow.message, VtUploadRow.platform)
+            select(VtUploadRow.video_id, VtUploadRow.video_link, VtUploadRow.message, VtUploadRow.platform)
             .where(VtUploadRow.upload_id == upload_id, VtUploadRow.status != "invalid")
             .order_by(VtUploadRow.row_number)
         ).all()
-        keys: list[tuple[str, str]] = []
-        for link, message, platform in rows:
+        ordered: list[int | tuple[str, str]] = []
+        for video_id, link, message, platform in rows:
+            if video_id is not None:
+                ordered.append(video_id)
+                continue
             # A Facebook share link is stored as uploaded; its note records the real video link it resolved to.
             parsed = parse_video_link(resolved_link_from_note(message) or link, instagram_reel_hint=platform == "instagram")
-            if parsed.ok and (parsed.platform, parsed.identifier) not in keys:
-                keys.append((parsed.platform, parsed.identifier))
+            if parsed.ok:
+                ordered.append((parsed.platform, parsed.identifier))
+        keys = list(dict.fromkeys(entry for entry in ordered if isinstance(entry, tuple)))
         found: dict[tuple[str, str], int] = {}
         for start in range(0, len(keys), 200):
             chunk = keys[start : start + 200]
             condition = or_(*[(VtVideo.platform == p) & (VtVideo.video_identifier == i) for p, i in chunk])
             for vid, platform, identifier in db.execute(select(VtVideo.id, VtVideo.platform, VtVideo.video_identifier).where(condition)):
                 found[(platform, identifier)] = vid
-    return [found[key] for key in keys if key in found]
+    ids = (found.get(entry) if isinstance(entry, tuple) else entry for entry in ordered)
+    return list(dict.fromkeys(video_id for video_id in ids if video_id is not None))
+
+
+def platform_view_totals(video_ids: list[int]) -> tuple[list[PlatformViewsOut], int]:
+    """Summed views per platform for exactly these videos, plus how many are still being checked.
+
+    A missing count (not checked yet, failed, video down) or an impossible negative one adds nothing
+    to the total; `videos_with_views` shows how much of the platform the total covers.
+    """
+    usable_views = case((VtVideo.current_views >= 0, VtVideo.current_views))
+    busy = case((VtVideo.status.in_(VideoStatus.ACTIVE_WORK), 1), else_=0)
+    rounded = case((and_(VtVideo.current_views >= 0, VtVideo.views_precision.not_in(EXACT_VIEW_PRECISIONS)), 1), else_=0)
+    with read_scope() as db:
+        rows = db.execute(
+            select(VtVideo.platform, func.count(), func.count(usable_views), func.sum(usable_views), func.sum(busy), func.sum(rounded))
+            .where(VtVideo.id.in_(video_ids or [-1]))
+            .group_by(VtVideo.platform)
+        ).all()
+    by_platform = {row[0]: row for row in rows}
+    totals = []
+    for platform in UPLOAD_TOTAL_PLATFORMS:
+        _, videos, with_views, views, _, rounded_count = by_platform.get(platform, (platform, 0, 0, 0, 0, 0))
+        totals.append(PlatformViewsOut(platform=platform, total_views=int(views or 0), videos=videos, videos_with_views=with_views,
+                                       videos_rounded=int(rounded_count or 0)))
+    return totals, sum(int(row[4] or 0) for row in rows)
+
+
+def _row_outcome(row_status: str, video_status: str | None) -> str:
+    if row_status in ("invalid", "duplicate"):
+        return row_status
+    if video_status is None:
+        return "removed"
+    if video_status in VideoStatus.ACTIVE_WORK:
+        return "processing"
+    return "failed" if video_status in VideoStatus.NO_DATA else "processed"
 
 
 def upload_rows(upload_id: str) -> tuple[UploadOut, list[UploadRowOut]] | None:
@@ -264,10 +347,21 @@ def upload_rows(upload_id: str) -> tuple[UploadOut, list[UploadRowOut]] | None:
         upload = db.get(VtUpload, upload_id)
         if upload is None:
             return None
-        rows = db.scalars(
-            select(VtUploadRow).where(VtUploadRow.upload_id == upload_id).order_by(VtUploadRow.row_number)
+        rows = db.execute(
+            select(VtUploadRow, VtVideo.status, VtVideo.status_reason)
+            .outerjoin(VtVideo, VtUploadRow.video_id == VtVideo.id)
+            .where(VtUploadRow.upload_id == upload_id)
+            .order_by(VtUploadRow.row_number)
         ).all()
-        return _upload_out(upload), [UploadRowOut.model_validate(r) for r in rows]
+        out = _with_progress(db, [_upload_out(upload)])[0]
+        results = []
+        for row, video_status, video_reason in rows:
+            item = UploadRowOut.model_validate(row)
+            item.video_status, item.video_status_reason = video_status, video_reason
+            if out.upload_type == "links":
+                item.outcome = _row_outcome(row.status, video_status)
+            results.append(item)
+        return out, results
 
 
 # ------------------------------------------------------------------ dashboard

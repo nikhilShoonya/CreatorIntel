@@ -108,7 +108,7 @@ export default function HistoryPage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-ink">Upload History</h1>
-          <p className="text-sm text-muted">Every file uploaded to Creator Analytics and Video Tracking, with its saved rows.</p>
+          <p className="text-sm text-muted">Every file or batch of links uploaded to Creator Analytics and Video Tracking, with its saved rows.</p>
         </div>
         <label className="relative w-full sm:w-72">
           <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
@@ -188,7 +188,15 @@ function VideoHistory({ query }: { query: string }) {
           query={query}
         />
       </Card>
-      <UploadVideosDialog open={uploading} onClose={() => setUploading(false)} onDone={() => setToken((n) => n + 1)} />
+      <UploadVideosDialog
+        open={uploading}
+        onClose={() => setUploading(false)}
+        onDone={() => setToken((n) => n + 1)}
+        onSaved={(message) => {
+          showToast("success", message);
+          setToken((n) => n + 1);
+        }}
+      />
     </div>
   );
 }

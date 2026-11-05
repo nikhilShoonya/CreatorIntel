@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -19,7 +21,7 @@ from app.utils.text import clean_text
 from app.utils.url_parser import parse_channel_link
 from app.video_performance import queries
 from app.video_performance import repository as repo
-from app.video_performance.ingest import ImportError_, parse_import
+from app.video_performance.ingest import ImportError_, ImportResult, ImportRow, parse_import, parse_link_batch, preview_link_batch
 from app.video_performance.models import JobType, VideoStatus
 from app.video_performance.schemas import (
     ActionOut,
@@ -32,7 +34,11 @@ from app.video_performance.schemas import (
     HistoryOut,
     ImportRowOut,
     JobInfo,
+    LinkBatchIn,
+    LinkPreviewIn,
+    LinkPreviewOut,
     UploadOut,
+    UploadPlatformTotalsOut,
     UploadResultOut,
     UploadRowsOut,
     UploadUpdateIn,
@@ -120,14 +126,7 @@ async def upload_videos(
     settings = get_settings()
     content = await file.read(settings.max_upload_bytes + 1)
     name = Path(file.filename or "videos").name[:200]
-    try:
-        result = await run_in_threadpool(parse_import, name, content, settings.max_upload_bytes)
-        share_links = [r.raw_link for r in result.rows if r.raw_link and is_share_link(r.raw_link)]
-        if share_links:  # resolve them, then re-read so duplicates are detected on the real video IDs
-            resolutions = await _share_resolver(request).resolve_many(share_links)
-            result = await run_in_threadpool(parse_import, name, content, settings.max_upload_bytes, resolutions)
-    except ImportError_ as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result = await _read_rows(request, parse_import, name, content, settings.max_upload_bytes)
 
     def persist():
         settings.upload_dir.mkdir(parents=True, exist_ok=True)
@@ -136,9 +135,27 @@ async def upload_videos(
         return repo.import_rows(name, stored, result.rows)
 
     upload_id, new_ids = await run_in_threadpool(persist)
+    return await _start_upload(upload_id, new_ids, result.rows, tracker)
+
+
+async def _read_rows(request: Request, parse: Callable[..., ImportResult], *source) -> ImportResult:
+    """Parse an upload; Facebook share links are resolved, then re-read so duplicates are found on the real video IDs."""
+    try:
+        result = await run_in_threadpool(parse, *source)
+        share_links = [r.raw_link for r in result.rows if r.raw_link and is_share_link(r.raw_link)]
+        if share_links:
+            resolutions = await _share_resolver(request).resolve_many(share_links)
+            result = await run_in_threadpool(parse, *source, resolutions)
+    except ImportError_ as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return result
+
+
+async def _start_upload(upload_id: str, new_ids: list[int], rows: list[ImportRow], tracker: VideoTracker) -> UploadResultOut:
+    """Hand the upload's new videos to the tracker (processing continues in the background) and report the rows."""
     tracker.start_processing(new_ids)
     upload = await run_in_threadpool(queries.upload, upload_id)
-    log_event(logger, logging.INFO, "vt_upload", upload_id=upload_id, rows=len(result.rows), added=len(new_ids))
+    log_event(logger, logging.INFO, "vt_upload", upload_id=upload_id, rows=len(rows), added=len(new_ids))
     return UploadResultOut(
         upload=upload,
         rows=[
@@ -146,9 +163,36 @@ async def upload_videos(
                 row=r.row, creator_name=r.creator_name, platform=r.parsed.platform,
                 video_url=r.parsed.url, status=r.status, message=r.message,
             )
-            for r in result.rows
+            for r in rows
         ],
     )
+
+
+def _upload_name(value: str | None) -> str:
+    """A display name that is safe to use for an upload's downloads (empty when nothing usable is left)."""
+    return Path(clean_text(value or "")).name.strip()[:200]
+
+
+@router.post("/uploads/links/preview", response_model=LinkPreviewOut)
+def preview_links(body: LinkPreviewIn):
+    """What pasted text would upload: nothing is saved or fetched."""
+    try:
+        return LinkPreviewOut(**asdict(preview_link_batch(body.links)))
+    except ImportError_ as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/uploads/links", response_model=UploadResultOut, status_code=201)
+async def upload_links(body: LinkBatchIn, request: Request, tracker: VideoTracker = Depends(get_tracker)):
+    """Pasted links as one upload batch, handled by the same import and tracker as an Excel / CSV upload."""
+    result = await _read_rows(request, parse_link_batch, body.links)
+    invalid = [r for r in result.rows if r.status == "invalid"]
+    if len(invalid) == len(result.rows):
+        raise HTTPException(status_code=422, detail=f"None of the {len(invalid)} links can be tracked. {invalid[0].message}")
+    when = local_time(utcnow(), get_settings().video_tracking_timezone)
+    name = _upload_name(body.name) or f"Bulk links {when:%d %b %Y %H-%M}"
+    upload_id, new_ids = await run_in_threadpool(repo.import_rows, name, None, result.rows, "links")
+    return await _start_upload(upload_id, new_ids, result.rows, tracker)
 
 
 @router.get("/uploads", response_model=list[UploadOut])
@@ -163,7 +207,7 @@ _ROW_LABELS = {"added": "Added", "already_tracked": "Already tracked", "duplicat
 @router.patch("/uploads/{upload_id}", response_model=UploadOut)
 def rename_upload(upload_id: str, body: UploadUpdateIn):
     """Rename an uploaded file (the name shown on the website and used for its downloads)."""
-    name = Path(clean_text(body.filename)).name.strip()[:200]
+    name = _upload_name(body.filename)
     if not name:
         raise HTTPException(status_code=422, detail="File name is required")
     if not repo.rename_upload(upload_id, name):
@@ -218,6 +262,13 @@ def upload_rows(upload_id: str):
         raise HTTPException(status_code=404, detail="Upload not found")
     upload, rows = found
     return UploadRowsOut(upload=upload, rows=rows)
+
+
+@router.get("/uploads/{upload_id}/platform-totals", response_model=UploadPlatformTotalsOut)
+def upload_platform_totals(upload_id: str):
+    """Total views per platform for the videos of one uploaded file (all of them, not one table page)."""
+    platforms, in_progress = queries.platform_view_totals(_upload_scope(upload_id))
+    return UploadPlatformTotalsOut(platforms=platforms, in_progress=in_progress)
 
 
 def _upload_scope(upload_id: str | None) -> list[int] | None:

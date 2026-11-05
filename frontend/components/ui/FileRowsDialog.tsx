@@ -7,7 +7,7 @@ import { Button, ErrorBanner } from "./controls";
 import { Dialog } from "./Dialog";
 import { formatDateTime } from "@/lib/format";
 
-export interface FileRowsColumn<Row> {
+interface FileRowsColumn<Row> {
   label: string;
   render: (row: Row) => ReactNode;
   className?: string;

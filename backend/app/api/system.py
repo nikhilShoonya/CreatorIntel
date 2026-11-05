@@ -20,6 +20,14 @@ def apify_usage() -> dict:
     return usage(get_settings())
 
 
+@router.get("/config/apify-facebook-usage")
+def apify_facebook_usage() -> dict:
+    """Local Facebook run/usage state only. Does not call Apify and never returns credentials."""
+    from app.video_performance.facebook_apify_repository import usage
+
+    return usage(get_settings())
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -33,6 +41,7 @@ def config_status() -> ConfigStatus:
         youtube_configured=settings.youtube_configured,
         instagram_configured=settings.instagram_configured,
         facebook_configured=settings.facebook_configured,
+        facebook_apify_enabled=settings.apify_facebook_enabled,
         ai_configured=settings.ai_configured,
         ai_model=settings.groq_model,
         meta_api_version=settings.meta_api_version,
@@ -61,14 +70,14 @@ class MetaQueueOut(BaseModel):
     paused: bool  # no Meta call can be made right now
     reason: str | None
     resume_at: UTCDateTime | None  # when Meta calls continue (None = now)
-    waiting_videos: int  # Instagram / Facebook videos waiting for Meta's hourly limit
+    waiting_videos: int  # Instagram videos waiting for Meta's hourly limit
     waiting_instagram_videos: int
     waiting_creators: int  # Instagram creators waiting for Meta's hourly limit
 
 
 @router.get("/config/meta-queue", response_model=MetaQueueOut)
 def meta_queue() -> MetaQueueOut:
-    """Meta (Instagram / Facebook) hourly call budget and the work waiting for it - read-only, no Meta call."""
+    """Meta (Instagram) hourly call budget and the work waiting for it - read-only, no Meta call."""
     from app.agents.instagram_agent import META_WAIT
     from app.models.db import ReadSessionLocal
     from app.models.entities import Creator, CreatorStatus

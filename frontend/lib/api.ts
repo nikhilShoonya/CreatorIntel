@@ -9,16 +9,15 @@ import type {
   Facets,
   InstagramTokenStatus,
   MetaQueue,
-  YouTubeQuota,
   UploadDetail,
   UploadRows,
   UploadSummary,
 } from "@/types";
 
 // 127.0.0.1 rather than "localhost": on Windows "localhost" tries IPv6 first and adds ~200 ms per request.
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 
-export class ApiError extends Error {
+class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
@@ -85,17 +84,9 @@ export async function downloadFile(path: string, fallbackName: string): Promise<
   URL.revokeObjectURL(url);
 }
 
-export interface DeleteResult {
+interface DeleteResult {
   deleted: number;
   message: string;
-}
-
-export interface CreatorRefreshStatus {
-  running: boolean;
-  progress_total: number;
-  progress_done: number;
-  finished_at: string | null;
-  message?: string;
 }
 
 export const api = {
@@ -121,9 +112,6 @@ export const api = {
   refreshProfile: (id: number) => request<{ message: string }>(`/api/creators/${id}/refresh-profile`, { method: "POST" }),
   configStatus: () => request<ConfigStatus>("/api/config/status"),
   /** Re-fetch every creator, or only one upload's creators (Upload & Analyze page). */
-  refreshAllCreators: (uploadId?: string) =>
-    request<CreatorRefreshStatus>(`/api/creators/refresh-all${toQuery({ upload_id: uploadId || undefined })}`, { method: "POST" }),
-  creatorRefreshStatus: () => request<CreatorRefreshStatus>("/api/creators/refresh-status"),
 
   // CRUD
   createCreator: (input: { channel_name: string; channel_link: string; upload_id?: string }) =>
@@ -145,9 +133,8 @@ export const api = {
   uploadRows: (id: string) => request<UploadRows>(`/api/uploads/${encodeURIComponent(id)}/rows`),
   downloadUploadRows: (id: string, format: "excel" | "csv") =>
     downloadFile(`/api/uploads/${encodeURIComponent(id)}/rows/export?format=${format}`, `upload_rows.${format === "excel" ? "xlsx" : "csv"}`),
-  youtubeQuota: () => request<YouTubeQuota>("/api/config/youtube-quota"),
   apiUsage: () => request<ApiUsage>("/api/config/api-usage"),
   apifyUsage: () => request<ApifyUsage>("/api/config/apify-usage"),
-  instagramToken: (refresh = false) =>
-    request<InstagramTokenStatus>(`/api/config/instagram-token${refresh ? "?refresh=true" : ""}`),
+  apifyFacebookUsage: () => request<ApifyUsage>("/api/config/apify-facebook-usage"),
+  instagramToken: () => request<InstagramTokenStatus>("/api/config/instagram-token"),
 };

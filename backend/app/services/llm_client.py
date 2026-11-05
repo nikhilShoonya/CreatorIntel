@@ -237,12 +237,6 @@ class LLMClient:
             times = [_budget(active[1], m).exhausted_until for m in self.settings.groq_models]
         return datetime.fromtimestamp(min(times), timezone.utc) if times and min(times) > _now() else None
 
-    async def structured_completion(
-        self, *, system: str, user: str, schema_name: str, schema: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Return the parsed JSON object produced under the given schema."""
-        return (await self.complete(system=system, user=user, schema_name=schema_name, schema=schema)).data
-
     async def complete(self, *, system: str, user: str, schema_name: str, schema: dict[str, Any]) -> LLMResult:
         if not self.configured:
             raise LLMError("AI analysis is not configured (set GROQ_API_KEY_1 in backend/.env)", retryable=False)

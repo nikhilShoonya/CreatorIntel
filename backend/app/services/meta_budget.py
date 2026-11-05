@@ -1,4 +1,4 @@
-"""Meta (Instagram / Facebook Graph API) call budget - shared by both modules.
+"""Meta (Instagram Graph API) call budget - shared by both modules.
 
 Meta limits calls per rolling hour. Before EVERY Graph call `take()` checks:
   * the local count of calls made in the last rolling hour (META_HOURLY_CALL_BUDGET);

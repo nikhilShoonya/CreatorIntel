@@ -1,11 +1,12 @@
-import { API_URL, ApiError, downloadFile, jsonInit, request, toQuery } from "@/lib/api";
+import { downloadFile, jsonInit, request, toQuery } from "@/lib/api";
 import type {
-  VpCreator,
   VpDashboard,
   VpFilters,
   VpHistory,
   VpJob,
+  VpLinkPreview,
   VpUpload,
+  VpUploadPlatformTotals,
   VpUploadResult,
   VpUploadRow,
   VpVideo,
@@ -22,7 +23,6 @@ interface ActionResult {
 /** Client for the independent Video Performance module (/api/video-performance). */
 export const vpApi = {
   dashboard: (days = 7) => request<VpDashboard>(`${BASE}/dashboard${toQuery({ days })}`),
-  jobs: () => request<VpJob[]>(`${BASE}/jobs`),
   runJob: (job: VpJob["job_type"]) => request<ActionResult>(`${BASE}/jobs/${job}/run`, jsonInit("POST")),
 
   videos: (filters: VpFilters, page: number, pageSize: number) =>
@@ -42,17 +42,9 @@ export const vpApi = {
   bulk: (ids: number[], action: "pause" | "resume" | "refresh" | "delete") =>
     request<ActionResult>(`${BASE}/videos/bulk`, jsonInit("POST", { ids, action })),
 
-  creators: () => request<VpCreator[]>(`${BASE}/creators`),
-  addCreator: (input: { channel_url: string; creator_name?: string; backfill?: number }) =>
-    request<VpCreator>(`${BASE}/creators`, jsonInit("POST", input)),
-  updateCreator: (id: number, input: { creator_name?: string; enabled?: boolean }) =>
-    request<VpCreator>(`${BASE}/creators/${id}`, jsonInit("PUT", input)),
-  deleteCreator: (id: number, deleteVideos: boolean) =>
-    request<ActionResult>(`${BASE}/creators/${id}?delete_videos=${deleteVideos ? "true" : "false"}`, jsonInit("DELETE")),
-  discover: (id: number) => request<ActionResult>(`${BASE}/creators/${id}/discover`, jsonInit("POST")),
-
   uploads: () => request<VpUpload[]>(`${BASE}/uploads`),
   uploadRows: (id: string) => request<{ upload: VpUpload; rows: VpUploadRow[] }>(`${BASE}/uploads/${encodeURIComponent(id)}/rows`),
+  uploadPlatformTotals: (id: string) => request<VpUploadPlatformTotals>(`${BASE}/uploads/${encodeURIComponent(id)}/platform-totals`),
   renameUpload: (id: string, filename: string) =>
     request<VpUpload>(`${BASE}/uploads/${encodeURIComponent(id)}`, jsonInit("PATCH", { filename })),
   deleteUpload: (id: string, deleteVideos: boolean) =>
@@ -72,6 +64,6 @@ export const vpApi = {
     body.append("file", file);
     return request<VpUploadResult>(`${BASE}/uploads`, { method: "POST", body });
   },
+  previewLinks: (links: string) => request<VpLinkPreview>(`${BASE}/uploads/links/preview`, jsonInit("POST", { links })),
+  uploadLinks: (links: string, name?: string) => request<VpUploadResult>(`${BASE}/uploads/links`, jsonInit("POST", { links, name })),
 };
-
-export { API_URL, ApiError };

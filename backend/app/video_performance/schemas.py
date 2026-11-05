@@ -11,6 +11,11 @@ from app.utils.time import as_utc
 
 UTC = Annotated[datetime, AfterValidator(as_utc)]
 _YOUTUBE_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+EXACT_VIEW_PRECISIONS = ("exact", "exact_or_displayed")
+
+
+def _approximate(precision: object) -> bool:
+    return isinstance(precision, str) and precision not in EXACT_VIEW_PRECISIONS
 
 
 def youtube_thumbnail(platform: str, video_identifier: str | None) -> str | None:
@@ -35,6 +40,14 @@ class VideoOut(BaseModel):
     metrics_source: str | None = None
     view_metric: str | None = None
     source_metrics: dict | None = None
+    plays: int | None = None
+    reactions: int | None = None
+    shares: int | None = None
+    content_type: str | None = None
+    profile_followers: int | None = None
+    profile_page_likes: int | None = None
+    views_precision: str | None = None
+    metric_status: dict | None = None
     source: str
     current_views: int | None
     previous_views: int | None
@@ -53,6 +66,17 @@ class VideoOut(BaseModel):
     discovered_at: UTC | None
     created_at: UTC
     caption: str | None = Field(default=None, exclude=True)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def views_approximate(self) -> bool:
+        """Current Views came from public shorthand such as 3.3M: useful, but not an exact count."""
+        return _approximate(self.views_precision)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def views_gained_approximate(self) -> bool:
+        return self.views_approximate or _approximate((self.metric_status or {}).get("previous_views_precision"))
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -95,6 +119,19 @@ class SnapshotOut(BaseModel):
     metrics_source: str | None = None
     view_metric: str | None = None
     source_metrics: dict | None = None
+    plays: int | None = None
+    reactions: int | None = None
+    shares: int | None = None
+    content_type: str | None = None
+    profile_followers: int | None = None
+    profile_page_likes: int | None = None
+    views_precision: str | None = None
+    metric_status: dict | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def views_approximate(self) -> bool:
+        return _approximate(self.views_precision)
 
 
 class HistoryOut(BaseModel):
@@ -136,11 +173,39 @@ class UploadOut(BaseModel):
     file_deleted_at: UTC | None = None
     file_delete_after: UTC | None = None
     file_available: bool = False  # the original file can still be downloaded
-    # Instagram / Facebook videos this file added, and how many still wait for Meta's hourly limit
+    # Instagram videos this file added, and how many still wait for Meta's hourly limit
     instagram_total: int = 0
     instagram_waiting: int = 0
-    facebook_total: int = 0
-    facebook_waiting: int = 0
+    upload_type: str = "file"  # file (Excel / CSV) | links (pasted links)
+    # Batches of pasted links only: where their unique videos stand now.
+    videos_total: int = 0
+    videos_processed: int = 0
+    videos_failed: int = 0
+    videos_in_progress: int = 0
+    processing_status: Literal["processing", "completed", "partial", "failed"] | None = None
+
+
+class LinkBatchIn(BaseModel):
+    links: str
+    name: str | None = Field(default=None, max_length=200)
+
+
+class LinkPreviewIn(BaseModel):
+    links: str
+
+
+class InvalidLinkOut(BaseModel):
+    link: str
+    message: str
+
+
+class LinkPreviewOut(BaseModel):
+    detected: int
+    valid: int
+    duplicates: int
+    invalid: int
+    platforms: dict[str, int]
+    invalid_links: list[InvalidLinkOut]
 
 
 class UploadUpdateIn(BaseModel):
@@ -158,11 +223,29 @@ class UploadRowOut(BaseModel):
     username: str | None
     status: str
     message: str | None
+    video_id: int | None = None
+    video_status: str | None = None
+    video_status_reason: str | None = None
+    # Batches of pasted links only: what became of this link.
+    outcome: Literal["processing", "processed", "failed", "duplicate", "invalid", "removed"] | None = None
 
 
 class UploadRowsOut(BaseModel):
     upload: UploadOut
     rows: list[UploadRowOut]
+
+
+class PlatformViewsOut(BaseModel):
+    platform: str
+    total_views: int
+    videos: int
+    videos_with_views: int  # the rest have no usable view count yet and add nothing to the total
+    videos_rounded: int = 0  # counted with a rounded public figure, so the total is approximate
+
+
+class UploadPlatformTotalsOut(BaseModel):
+    platforms: list[PlatformViewsOut]
+    in_progress: int  # videos still being checked, so the totals may still change
 
 
 class ImportRowOut(BaseModel):

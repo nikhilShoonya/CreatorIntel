@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 
-export interface MenuItem {
+interface MenuItem {
   label: string;
   icon?: ReactNode;
   onSelect: () => void;

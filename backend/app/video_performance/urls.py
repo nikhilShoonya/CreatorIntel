@@ -14,7 +14,7 @@ _FB_HOSTS = {
 _FB_SHORT_HOSTS = {"fb.watch", "www.fb.watch"}
 _FB_VIDEO_ID = re.compile(r"^\d{5,25}$")
 _FB_NO_ID = (
-    "do not contain the video ID, and Meta's official API cannot resolve them. Open the video on Facebook and "
+    "do not contain the video ID, and this one could not be converted. Open the video on Facebook and "
     "copy the address bar link instead (facebook.com/<page>/videos/<id> or facebook.com/reel/<id>)"
 )
 
@@ -86,7 +86,7 @@ def parse_video_link(raw: object, *, instagram_reel_hint: bool = False) -> Parse
         return _facebook(segments, parts.query)
     if not host or "." not in host:
         return _invalid("Video link is not a valid URL")
-    return _invalid(f"Unsupported platform ({host}). Only YouTube and Instagram videos are supported")
+    return _invalid(f"Unsupported platform ({host}). Only YouTube, Instagram and Facebook videos are supported")
 
 
 def _youtube(video_id: str) -> ParsedVideo:

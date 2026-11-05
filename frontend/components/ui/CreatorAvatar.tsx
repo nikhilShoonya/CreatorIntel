@@ -5,7 +5,7 @@ import { useState } from "react";
 import { PlatformIcon } from "@/components/ui/PlatformIcon";
 
 /** Platform-tinted gradients used for the fallback (initials) avatar and profile covers. */
-export const PLATFORM_GRADIENTS: Record<string, string> = {
+const PLATFORM_GRADIENTS: Record<string, string> = {
   youtube: "linear-gradient(135deg, #ff4d6d 0%, #ff0033 55%, #c9184a 100%)",
   instagram: "linear-gradient(135deg, #f9ce34 0%, #ee2a7b 50%, #6228d7 100%)",
 };

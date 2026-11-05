@@ -3,11 +3,11 @@
 import { useId, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 import { FileSpreadsheet, RefreshCw, UploadCloud, X } from "lucide-react";
 
-export const SPREADSHEET_ACCEPT = ".xlsx,.xls,.csv";
-export const MAX_UPLOAD_MB = 10;
+const SPREADSHEET_ACCEPT = ".xlsx,.xls,.csv";
+const MAX_UPLOAD_MB = 10;
 
 /** Client-side check before uploading (the backend validates again). */
-export function validateSpreadsheet(file: File): string | null {
+function validateSpreadsheet(file: File): string | null {
   const dot = file.name.lastIndexOf(".");
   const ext = dot >= 0 ? file.name.toLowerCase().slice(dot) : "";
   if (![".xlsx", ".xls", ".csv"].includes(ext)) return `"${file.name}" is not a spreadsheet. Upload a .xlsx, .xls or .csv file.`;
@@ -16,7 +16,7 @@ export function validateSpreadsheet(file: File): string | null {
   return null;
 }
 
-export function formatFileSize(bytes: number): string {
+function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;

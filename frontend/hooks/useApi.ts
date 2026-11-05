@@ -24,20 +24,6 @@ const ERROR_RETRY_MS = 5000;
 const responseCache = new Map<string, unknown>();
 const CACHE_LIMIT = 200;
 
-/** Passed to fetchers: `force` is true when the user asked for fresh data (backend caches may be bypassed). */
-export interface FetchContext {
-  force: boolean;
-}
-
-// Every mounted useApi registers here so one "Refresh data" click reloads everything on screen.
-const refreshListeners = new Set<() => Promise<void>>();
-
-/** Reload all data currently shown (and drop cached responses of other pages). Resolves when every reload finished. */
-export function refreshAllData(): Promise<void> {
-  responseCache.clear();
-  return Promise.all([...refreshListeners].map((listener) => listener())).then(() => undefined);
-}
-
 function remember(key: string, data: unknown) {
   responseCache.delete(key);
   responseCache.set(key, data);
@@ -52,13 +38,11 @@ function remember(key: string, data: unknown) {
  * discarded responses. Polling pauses while the browser tab is hidden.
  * Previously loaded data for the same key is shown instantly (stale-while-revalidate).
  */
-export function useApi<T>(key: string | null, fetcher: (context: FetchContext) => Promise<T>, options: Options<T> = {}) {
+export function useApi<T>(key: string | null, fetcher: () => Promise<T>, options: Options<T> = {}) {
   const { refreshMs, keepPrevious = false } = options;
   const [state, setState] = useState<ApiState<T>>({ key: null });
   const [tick, setTick] = useState(0);
   const fetcherRef = useRef(fetcher);
-  // Set by a global refresh: the next run is forced and resolves this promise when it settles.
-  const forcedRef = useRef<{ done: () => void } | null>(null);
   const refreshRef = useRef<Refresh<T> | undefined>(refreshMs);
 
   useEffect(() => {
@@ -97,12 +81,8 @@ export function useApi<T>(key: string | null, fetcher: (context: FetchContext) =
     };
 
     function run() {
-      const forced = forcedRef.current;
-      forcedRef.current = null;
-      const settle = () => forced?.done();
-      fetcherRef.current({ force: forced !== null }).then(
+      fetcherRef.current().then(
         (data) => {
-          settle();
           if (cancelled) return;
           lastData = data;
           remember(cacheKey, data);
@@ -110,7 +90,6 @@ export function useApi<T>(key: string | null, fetcher: (context: FetchContext) =
           schedule(data, false);
         },
         (error: unknown) => {
-          settle();
           if (cancelled) return;
           setState((prev) => ({
             key,
@@ -129,22 +108,6 @@ export function useApi<T>(key: string | null, fetcher: (context: FetchContext) =
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [key, tick]);
-
-  useEffect(() => {
-    if (key === null) return;
-    const listener = () =>
-      new Promise<void>((resolve) => {
-        forcedRef.current?.done();
-        forcedRef.current = { done: resolve };
-        setTick((t) => t + 1);
-      });
-    refreshListeners.add(listener);
-    return () => {
-      refreshListeners.delete(listener);
-      forcedRef.current?.done(); // never leave the refresh button waiting on an unmounted view
-      forcedRef.current = null;
-    };
-  }, [key]);
 
   const current = state.key === key;
   const reload = useCallback(() => setTick((t) => t + 1), []);

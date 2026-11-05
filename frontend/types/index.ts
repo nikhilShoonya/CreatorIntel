@@ -112,7 +112,7 @@ export interface GrowthPoint {
   added: number; // added on this day
 }
 
-/** Meta (Instagram / Facebook) hourly call budget and the work waiting for it. */
+/** Meta (Instagram) hourly call budget and the work waiting for it. */
 export interface MetaQueue {
   calls_last_hour: number;
   hourly_budget: number;
@@ -178,7 +178,7 @@ export interface UploadRows {
   rows: UploadRow[];
 }
 
-export interface YouTubeKeyUsage {
+interface YouTubeKeyUsage {
   label: string;
   fingerprint: string;
   units: number;
@@ -210,7 +210,6 @@ export interface MetaUsageMetrics {
 
 export interface InstagramUsage {
   calls_today: number;
-  facebook_calls_today: number;
   percent: number;
   metrics: MetaUsageMetrics;
   safety_stop_percent: number;
@@ -296,6 +295,7 @@ export interface ConfigStatus {
   youtube_configured: boolean;
   instagram_configured: boolean;
   facebook_configured: boolean;
+  facebook_apify_enabled: boolean;
   ai_configured: boolean;
   ai_model: string;
   meta_api_version: string;

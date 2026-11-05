@@ -30,7 +30,6 @@ logger = logging.getLogger("creatorintel.api_usage")
 YOUTUBE = "youtube"
 INSTAGRAM = "instagram"
 GROQ = "groq"
-FACEBOOK = "facebook"
 META_WINDOW_MINUTES = 60  # Meta's platform rate limit is a rolling one-hour window
 QUOTA_TZ = ZoneInfo("America/Los_Angeles")  # YouTube quota resets at midnight Pacific Time
 FLUSH_EVERY_SECONDS = 20
@@ -52,15 +51,6 @@ def local_day(now: datetime | None = None) -> str:
 def record_instagram_call() -> None:
     """Count one Instagram Graph API request (every attempt)."""
     key = (local_day(), INSTAGRAM, "app")
-    with _lock:
-        entry = _pending.setdefault(key, [0, 0, None])
-        entry[0] += 1
-        entry[1] += 1
-
-
-def record_facebook_call() -> None:
-    """Count one Facebook Graph API request (every attempt)."""
-    key = (local_day(), FACEBOOK, "app")
     with _lock:
         entry = _pending.setdefault(key, [0, 0, None])
         entry[0] += 1
@@ -270,7 +260,6 @@ class MetaUsageMetrics(BaseModel):
 
 class InstagramUsage(BaseModel):
     calls_today: int
-    facebook_calls_today: int = 0  # same Meta app limit
     percent: float  # highest of Meta's three reported percentages (rolling one-hour limit)
     metrics: MetaUsageMetrics = MetaUsageMetrics()  # each percentage as reported by Meta (empty when stale)
     safety_stop_percent: float = 80.0  # CreatorIntel stops calling Meta when any reported percentage reaches this
@@ -314,15 +303,12 @@ def instagram_usage() -> InstagramUsage:
     day = local_day()
     with ReadSessionLocal() as db:
         row = db.get(ApiUsage, (day, INSTAGRAM, "app"))
-        fb_row = db.get(ApiUsage, (day, FACEBOOK, "app"))
     with _lock:
         pending_calls = _pending.get((day, INSTAGRAM, "app"), [0, 0, None])[1]
-        fb_pending = _pending.get((day, FACEBOOK, "app"), [0, 0, None])[1]
     percent, metrics, observed, regain = latest_meta_reading()
     stale = observed is None or utcnow() - observed > timedelta(minutes=META_WINDOW_MINUTES)
     return InstagramUsage(
         calls_today=(row.calls if row else 0) + pending_calls,
-        facebook_calls_today=(fb_row.calls if fb_row else 0) + fb_pending,
         percent=0.0 if stale else percent,
         metrics=MetaUsageMetrics() if stale else metrics,
         safety_stop_percent=get_settings().meta_usage_stop_percent,

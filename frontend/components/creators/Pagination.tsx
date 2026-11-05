@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
-export const PAGE_SIZES = [10, 25, 50, 100];
+const PAGE_SIZES = [10, 25, 50, 100];
 
 function pageList(current: number, total: number): (number | "…")[] {
   if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);

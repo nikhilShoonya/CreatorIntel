@@ -11,9 +11,23 @@ export function useApifyUsage() {
   return useApi("apify-usage", api.apifyUsage, { refreshMs: 15000, keepPrevious: true });
 }
 
+/** Facebook's run ledger, separate from Instagram's (never calls Apify, never returns credentials). */
+function useFacebookApifyUsage() {
+  return useApi("apify-facebook-usage", api.apifyFacebookUsage, { refreshMs: 15000, keepPrevious: true });
+}
+
 /** Apify reel results used this month, against the app's own monthly limit. */
 export function ApifyUsageCard() {
-  const { data, error, reload } = useApifyUsage();
+  return <UsageCard usage={useApifyUsage()} title="Apify (Instagram reels)" unit="reels" />;
+}
+
+/** Facebook results used this month, against their own monthly limit. */
+export function FacebookApifyUsageCard() {
+  return <UsageCard usage={useFacebookApifyUsage()} title="Apify (Facebook videos)" unit="results" />;
+}
+
+function UsageCard({ usage, title, unit }: { usage: ReturnType<typeof useApifyUsage>; title: string; unit: string }) {
+  const { data, error, reload } = usage;
   if (error) return <RowPlaceholder error={error} onRetry={reload} />;
   if (!data) return <RowPlaceholder />;
   if (!data.configured) return null; // shown as "Not set up" under Connections
@@ -21,8 +35,8 @@ export function ApifyUsageCard() {
   const runs = data.recent_runs.filter((run) => run.message).slice(0, 3);
   return (
     <UsageRow
-      title="Apify (Instagram reels)"
-      value={<><span className="font-semibold text-ink">{formatNumber(data.used_units)}</span> / {formatNumber(data.limit)} reels this month</>}
+      title={title}
+      value={<><span className="font-semibold text-ink">{formatNumber(data.used_units)}</span> / {formatNumber(data.limit)} {unit} this month</>}
       bar={<UsageBar label="Apify monthly results used" percent={percent} full={data.remaining === 0} valueNow={data.used_units} valueMax={data.limit} />}
       status={
         data.remaining === 0 ? (

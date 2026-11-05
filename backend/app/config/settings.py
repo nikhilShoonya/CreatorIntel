@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     # Video Performance: view counts are read this many times per check and the highest is kept (YouTube's
     # servers can return an older copy of a count). Each extra read costs 1 unit per 50 videos.
     youtube_view_reads: int = Field(default=3, ge=1, le=5)
-    # Meta (Instagram + Facebook Graph API) calls allowed per rolling hour, and the share of Meta's reported
+    # Meta (Instagram Graph API) calls allowed per rolling hour, and the share of Meta's reported
     # hourly usage at which the app stops calling. Work that does not fit waits and continues automatically.
     meta_hourly_call_budget: int = Field(default=180, ge=1)
     meta_usage_stop_percent: float = Field(default=80.0, gt=0, le=100)
@@ -37,9 +37,6 @@ class Settings(BaseSettings):
     # Instagram Professional account ID used as the "viewer" for Business Discovery.
     # Optional: discovered automatically from the access token's Facebook Pages when empty.
     meta_ig_business_account_id: str = ""
-    # Facebook Page whose videos/reels Video Performance can track. META_ACCESS_TOKEN must be a System User
-    # token with this Page assigned; the Page access token is derived from it at runtime (never stored).
-    meta_facebook_page_id: str = ""
 
     # Video Performance direct Reels only. A missing token keeps the existing Meta route active.
     apify_api_token: str = Field(default="", repr=False)
@@ -52,7 +49,24 @@ class Settings(BaseSettings):
     # Apify's minimum). A ceiling, not the price: the run is billed only for Reels actually returned.
     apify_max_charge_per_reel_usd: float = Field(default=0.005, gt=0, le=1)
 
-    @field_validator("apify_instagram_reel_actor_id")
+    # Video Performance Facebook metrics (public reels and videos of any Page), with the shared APIFY_API_TOKEN.
+    apify_facebook_actor_id: str = "chronometrica/facebook-metrics-scraper"
+    apify_facebook_enabled: bool = False
+    apify_facebook_batch_size: int = Field(default=10, ge=1, le=100)
+    apify_facebook_monthly_result_limit: int = Field(default=900, ge=0, le=1_000_000)
+    apify_facebook_max_concurrency: int = Field(default=3, ge=1, le=20)
+    apify_facebook_include_author_profile_metrics: bool = True
+    # Rows for links without data say which link failed and why, but the Actor charges for them like any other row.
+    # Off: those links are only counted in the run's OUTPUT summary, so the exact reason is often unknown.
+    apify_facebook_include_failed_rows: bool = True
+    apify_facebook_request_delay_ms: int = Field(default=250, ge=0, le=60_000)
+    apify_facebook_max_fetch_retries: int = Field(default=3, ge=0, le=10)
+    apify_facebook_request_timeout_secs: int = Field(default=20, ge=1, le=300)
+    apify_facebook_run_timeout_secs: int = Field(default=600, ge=30, le=3600)
+    apify_facebook_poll_seconds: float = Field(default=5.0, gt=0, le=60)
+    apify_facebook_max_charge_per_result_usd: float = Field(default=0.005, gt=0, le=1)  # a ceiling, not the price
+
+    @field_validator("apify_instagram_reel_actor_id", "apify_facebook_actor_id")
     @classmethod
     def _apify_actor(cls, value: str) -> str:
         value = value.strip()
@@ -180,7 +194,7 @@ class Settings(BaseSettings):
 
     @property
     def facebook_configured(self) -> bool:
-        return bool(self.meta_access_token.strip() and self.meta_facebook_page_id.strip())
+        return self.apify_facebook_enabled and bool(self.apify_api_token.strip())
 
     @property
     def instagram_configured(self) -> bool:

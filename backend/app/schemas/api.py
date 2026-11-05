@@ -202,6 +202,7 @@ class ConfigStatus(BaseModel):
     youtube_configured: bool
     instagram_configured: bool
     facebook_configured: bool = False
+    facebook_apify_enabled: bool = False
     ai_configured: bool
     ai_model: str
     meta_api_version: str

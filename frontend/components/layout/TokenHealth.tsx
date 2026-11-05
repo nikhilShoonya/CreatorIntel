@@ -19,7 +19,7 @@ function signature(status: InstagramTokenStatus) {
 
 /** Slim app-wide warning when the Instagram (Meta) token is expired, invalid or about to expire. */
 export function TokenBanner() {
-  const { data } = useApi("ig-token", ({ force }) => api.instagramToken(force));
+  const { data } = useApi("ig-token", api.instagramToken);
   const [dismissed, setDismissed] = useStoredValue(DISMISS_KEY, "");
   if (!data || !PROBLEM.includes(data.state) || dismissed === signature(data)) return null;
   const expiring = data.state === "expiring";
@@ -45,9 +45,9 @@ export function TokenBanner() {
   );
 }
 
-/** The Meta token check for Settings (`force` re-checks with Meta when all data on screen is reloaded). */
+/** The Meta token check for Settings. */
 export function useInstagramToken(enabled: boolean) {
-  return useApi(enabled ? "ig-token-settings" : null, ({ force }) => api.instagramToken(force), { keepPrevious: true });
+  return useApi(enabled ? "ig-token-settings" : null, api.instagramToken, { keepPrevious: true });
 }
 
 /** One short line about the Meta token, e.g. "Token valid · 45 days left". */
@@ -181,7 +181,7 @@ const META_METRICS: { key: keyof MetaUsageMetrics; label: string }[] = [
   { key: "total_time", label: "Total time" },
 ];
 
-/** Meta (Instagram + Facebook) hourly usage as reported by Meta, plus calls made today. */
+/** Meta (Instagram) hourly usage as reported by Meta, plus calls made today. */
 export function InstagramUsageCard() {
   const { data, error } = useUsage();
   if (!data) return <RowPlaceholder error={error} />;
@@ -191,7 +191,7 @@ export function InstagramUsageCard() {
   const reported = !ig.stale && META_METRICS.some(({ key }) => metrics[key] !== null);
   return (
     <UsageRow
-      title="Meta (Instagram + Facebook)"
+      title="Meta (Instagram)"
       value={<><span className="font-semibold text-ink">{ig.percent}%</span> of the hourly limit</>}
       bar={<UsageBar label="Highest Meta-reported usage" percent={Math.min(ig.percent, 100)} full={blocked} valueNow={ig.percent} valueMax={100} />}
       status={
@@ -203,7 +203,7 @@ export function InstagramUsageCard() {
           </p>
         ) : (
           <p className="text-muted">
-            {units(ig.calls_today)} Instagram · {units(ig.facebook_calls_today)} Facebook call{ig.calls_today + ig.facebook_calls_today === 1 ? "" : "s"} today
+            {units(ig.calls_today)} Instagram call{ig.calls_today === 1 ? "" : "s"} today
           </p>
         )
       }

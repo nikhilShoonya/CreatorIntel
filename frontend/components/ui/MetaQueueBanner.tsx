@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import type { MetaQueue } from "@/types";
 
 /** "continues automatically after 13:05" (or "within a few minutes" when Meta calls are allowed again). */
-export function metaResumeText(queue: MetaQueue | undefined): string {
+function metaResumeText(queue: MetaQueue | undefined): string {
   if (!queue?.resume_at) return "within a few minutes";
   return `after ${new Date(queue.resume_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}`;
 }
@@ -22,16 +22,14 @@ export function useMetaQueue() {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** Shown while Instagram / Facebook work waits for Meta's hourly limit. */
+/** Shown while Instagram work waits for Meta's hourly limit. */
 export function MetaQueueBanner({ scope }: { scope: "videos" | "creators" }) {
   const { data } = useMetaQueue();
   if (!data) return null;
-  const facebook = data.waiting_videos - data.waiting_instagram_videos;
   const parts =
     scope === "videos"
       ? [
           data.waiting_instagram_videos > 0 && plural(data.waiting_instagram_videos, "Instagram reel", "Instagram reels"),
-          facebook > 0 && plural(facebook, "Facebook video", "Facebook videos"),
         ].filter(Boolean)
       : data.waiting_creators > 0
         ? [plural(data.waiting_creators, "Instagram creator", "Instagram creators")]
@@ -58,12 +56,10 @@ export function MetaQueueBanner({ scope }: { scope: "videos" | "creators" }) {
 
 /** "40 of 100 Instagram reels fetched, rest continue automatically after 13:05" for one uploaded file. */
 export function metaUploadProgress(
-  upload: { instagram_total: number; instagram_waiting: number; facebook_total: number; facebook_waiting: number },
+  upload: { instagram_total: number; instagram_waiting: number },
   queue: MetaQueue | undefined,
 ): string | null {
-  const total = upload.instagram_total + upload.facebook_total;
-  const waiting = upload.instagram_waiting + upload.facebook_waiting;
+  const { instagram_total: total, instagram_waiting: waiting } = upload;
   if (!waiting) return null;
-  const label = upload.facebook_total === 0 ? "Instagram reels" : upload.instagram_total === 0 ? "Facebook videos" : "Instagram / Facebook videos";
-  return `${total - waiting} of ${total} ${label} fetched, rest continue automatically ${metaResumeText(queue)}`;
+  return `${total - waiting} of ${total} Instagram reels fetched, rest continue automatically ${metaResumeText(queue)}`;
 }

@@ -85,8 +85,8 @@ const VIDEO = [
     title: "Add videos to track",
     body: (
       <>
-        In <b>Video Performance → Tracking Library</b>, upload a file with a <b>Video Link</b> column (plus Creator Name if you
-        like), or use <b>Add video</b> for a single link.
+        In <b>Video Performance → Tracking Library</b>, click <b>Upload Videos</b>. Upload a file with a <b>Video Link</b> column
+        (plus Creator Name if you like), add a single link, or paste multiple links.
       </>
     ),
   },

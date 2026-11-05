@@ -18,6 +18,18 @@ export interface VpVideo {
   metrics_source?: string | null;
   view_metric?: string | null;
   source_metrics?: Record<string, string | number | null> | null;
+  /** Facebook only. Plays are not views, and reactions are not likes. */
+  plays: number | null;
+  reactions: number | null;
+  shares: number | null;
+  content_type: string | null;
+  profile_followers: number | null;
+  profile_page_likes: number | null;
+  views_precision: string | null;
+  metric_status: VpMetricStatus | null;
+  /** Current Views came from public shorthand such as 3.3M: not an exact count. */
+  views_approximate: boolean;
+  views_gained_approximate: boolean;
   source: "upload" | "manual" | "discovered";
   current_views: number | null;
   previous_views: number | null;
@@ -38,6 +50,12 @@ export interface VpVideo {
   created_at: string;
 }
 
+export interface VpMetricStatus {
+  content?: Record<string, { status: string | null; precision: string | null; source: string | null }>;
+  profile?: Record<string, { status: string | null; precision: string | null; source: string | null }>;
+  previous_views_precision?: string | null;
+}
+
 export interface VpVideoList {
   items: VpVideo[];
   total: number;
@@ -51,6 +69,10 @@ export interface VpSnapshot {
   metrics_source?: string | null;
   view_metric?: string | null;
   source_metrics?: Record<string, string | number | null> | null;
+  plays: number | null;
+  reactions: number | null;
+  shares: number | null;
+  views_approximate: boolean;
   captured_at: string;
   views: number | null;
   likes: number | null;
@@ -64,23 +86,6 @@ export interface VpSnapshot {
 export interface VpHistory {
   video: VpVideo;
   snapshots: VpSnapshot[];
-}
-
-export interface VpCreator {
-  id: number;
-  creator_name: string;
-  platform: VpPlatform;
-  channel_url: string;
-  username: string | null;
-  platform_name: string | null;
-  enabled: boolean;
-  status: "Pending" | "Active" | "Paused" | "Failed" | "Unsupported";
-  status_reason: string | null;
-  tracking_since: string;
-  last_discovery_at: string | null;
-  videos_discovered: number;
-  video_count: number;
-  created_at: string;
 }
 
 export interface VpImportRow {
@@ -108,8 +113,23 @@ export interface VpUpload {
   /** Instagram / Facebook videos this file added, and how many still wait for Meta's hourly limit. */
   instagram_total: number;
   instagram_waiting: number;
-  facebook_total: number;
-  facebook_waiting: number;
+  upload_type: "file" | "links";
+  /** Batches of pasted links only: where their unique videos stand now. */
+  videos_total: number;
+  videos_processed: number;
+  videos_failed: number;
+  videos_in_progress: number;
+  processing_status: "processing" | "completed" | "partial" | "failed" | null;
+}
+
+export interface VpLinkPreview {
+  detected: number;
+  valid: number;
+  duplicates: number;
+  invalid: number;
+  /** Valid, unique links per detected platform. */
+  platforms: Record<string, number>;
+  invalid_links: { link: string; message: string }[];
 }
 
 export interface VpUploadResult {
@@ -125,6 +145,27 @@ export interface VpUploadRow {
   username: string | null;
   status: "added" | "already_tracked" | "duplicate" | "invalid";
   message: string | null;
+  video_id: number | null;
+  video_status: VpStatus | null;
+  video_status_reason: string | null;
+  /** Batches of pasted links only: what became of this link. */
+  outcome: "processing" | "processed" | "failed" | "duplicate" | "invalid" | "removed" | null;
+}
+
+export interface VpPlatformViews {
+  platform: VpPlatform;
+  total_views: number;
+  videos: number;
+  /** The rest have no usable view count yet and add nothing to the total. */
+  videos_with_views: number;
+  /** Counted with a rounded public figure, so the total is approximate. */
+  videos_rounded: number;
+}
+
+export interface VpUploadPlatformTotals {
+  platforms: VpPlatformViews[];
+  /** Videos still being checked, so the totals may still change. */
+  in_progress: number;
 }
 
 export interface SentimentCounts {

@@ -3,7 +3,7 @@
 Internal tool for a small team, with two independent modules:
 
 - **Creator Analytics**: upload an Excel/CSV list of creators (Channel Name + Channel Link). Each creator is enriched from the **YouTube Data API v3** and the **Instagram Graph API**, analysed by **Groq AI** (genre, language, sentiment), and shown in one table you can filter, sort and export.
-- **Video Performance**: track individual YouTube videos, Instagram reels and videos/reels of **your own Facebook Page**. Views are checked automatically every day, and each video gets an AI sentiment rating.
+- **Video Performance**: track individual YouTube videos, Instagram reels and **public Facebook videos and reels of any Page**. Views are checked automatically every day, and each video gets an AI sentiment rating.
 
 ```text
 CreatorIntel/
@@ -43,12 +43,16 @@ All secrets live in `backend/.env`, which is git-ignored and never sent to the b
 | --- | --- | --- |
 | `YOUTUBE_API_KEY` | for YouTube | YouTube Data API v3 key. Several allowed, comma-separated |
 | `YOUTUBE_DAILY_QUOTA` | optional | Units per key per day, for the Settings usage bar (default 10000) |
-| `META_ACCESS_TOKEN` | for Instagram / Facebook | Facebook Login user token or **System User** token (starts with `EAA`) |
+| `META_ACCESS_TOKEN` | for Instagram | Facebook Login user token or **System User** token (starts with `EAA`) |
 | `META_APP_SECRET` | recommended | Signs Graph API requests (`appsecret_proof`) |
 | `META_APP_ID` | optional | Your Meta app ID (reference only) |
 | `META_API_VERSION` | optional | Graph API version, default `v21.0` |
 | `META_IG_BUSINESS_ACCOUNT_ID` | optional | Your own Instagram Professional account ID (auto-discovered if empty) |
-| `META_FACEBOOK_PAGE_ID` | for Facebook | The Facebook Page whose videos/reels are tracked |
+| `APIFY_API_TOKEN` | for Facebook / Apify Reels | Apify token, shared with the Instagram Reel integration |
+| `APIFY_FACEBOOK_ENABLED` | for Facebook | `true` turns on Facebook metrics from Apify |
+| `APIFY_FACEBOOK_ACTOR_ID` | optional | Default `chronometrica/facebook-metrics-scraper` |
+| `APIFY_FACEBOOK_BATCH_SIZE`, `APIFY_FACEBOOK_MONTHLY_RESULT_LIMIT` | optional | Links per Actor run (default 10); this app's own monthly limit (default 900), separate from Instagram's |
+| `APIFY_FACEBOOK_INCLUDE_FAILED_ROWS` | optional | Default `true`: says which link failed and why, but each such row is billed |
 | `GROQ_API_KEY_1` … `_3` | for AI | Groq keys, used in order (see section 5). `GROQ_API_KEY` also works, alone or comma-separated |
 | `GROQ_MODEL` | optional | `openai/gpt-oss-20b`, the only model used |
 | `GROQ_REQUESTS_PER_MINUTE` / `GROQ_TOKENS_PER_MINUTE` | optional | Per-minute limits that requests are paced under (free plan: 30 / 8000) |
@@ -103,12 +107,16 @@ Creator Analytics calls `channels.list`, then `playlistItems.list` on the upload
 3. Create a token with `instagram_basic`, `instagram_manage_insights`, `pages_show_list`, `pages_read_engagement` and `read_insights`. For a token that does not expire, use a **Business Manager System User** and assign your Page and Instagram account to it.
 4. Set `META_ACCESS_TOKEN`, `META_APP_SECRET`, and optionally `META_IG_BUSINESS_ACCOUNT_ID`. If you leave the ID empty, it is discovered from your Page.
 
-**Facebook** (Video Performance only): set `META_FACEBOOK_PAGE_ID` and use a System User token with that Page assigned. The Page token is derived at runtime.
-- Only videos and reels of **this Page** can be tracked.
+**Facebook** (Video Performance only) does not use Meta: its metrics come from the Apify Actor `chronometrica/facebook-metrics-scraper`. Set `APIFY_API_TOKEN` and `APIFY_FACEBOOK_ENABLED=true`.
+- Public reels and videos of **any Page** can be tracked, with one Actor run per batch of links (`APIFY_FACEBOOK_BATCH_SIZE`).
+- **Views and plays are kept apart, as are likes and reactions.** Current Views uses `views`, or `plays` only when Facebook shows no views. Engagement stays (likes + comments) / views.
+- Rounded public figures such as `3.3M` are shown with **≈**, and never as exact counts.
+- A link with no public metrics cannot be told apart from a deleted one: never read before, it becomes **Video Down**; read before, it keeps its numbers with a note.
+- **Each row the Actor writes is billed, including rows for links with no data.** `APIFY_FACEBOOK_INCLUDE_FAILED_ROWS=false` avoids that charge, but those links are then only counted in the run summary, so the exact reason is often unknown. `APIFY_FACEBOOK_MONTHLY_RESULT_LIMIT` is this app's own limit, separate from Instagram's; see **Settings**.
 - Share links (`facebook.com/share/r/…`) are resolved to the real video link.
 
 **Limits of the official API:**
-- Personal, private and other people's Facebook videos cannot be read.
+- Private or login-restricted Facebook videos cannot be read.
 - Such Instagram creators are marked **Failed – Instagram data unavailable**.
 - Such videos are marked **Unsupported**, with the reason.
 
@@ -180,10 +188,10 @@ npm run build && npm start  # production
 | `/` | Redirects to **Creator Analytics → Dashboard**. The former Upload & Analyze page was retired; old bookmarks of `/` keep working |
 | **Creator Analytics → Dashboard** (`/creator-analytics`) | Totals and distributions over all stored creators (platform, status, genre, language, sentiment, average engagement), recently analysed creators and those needing attention. Read-only: opening it never calls YouTube, Instagram or the AI. Clicking a number opens the Creator List with that filter. With no creators yet, **Upload creators** opens the upload dialog |
 | **Creator Analytics → Creator List** (`/creators`) | All analysed creators: search, filter, sort, details popup, add/edit/delete, retry, re-analyse, export. Filters can be set in the link, e.g. `/creators?status=Failed` |
-| **History** (`/history`) | Two tabs: **Creator Analytics History** (creator uploads, newest first: live processing status, file data, view creators, **Retry failed & partial**, delete) and **Video Tracking History** (video lists: view data, rename, re-check, download, delete), with a file-name search |
+| **History** (`/history`) | Two tabs: **Creator Analytics History** (creator uploads, newest first: live processing status, file data, view creators, **Retry failed & partial**, delete) and **Video Tracking History** (video lists and batches of pasted links, with live batch status: view data, rename, re-check, download, delete), with a file-name search |
 | **Video Performance → Dashboard** | Totals, daily views trend, sentiment breakdown, top / most engaging videos, job status with **Run now** |
-| **Video Performance → Tracking Library** | **Tracked videos** (table, filters, history, bulk actions) and **Uploads** (each uploaded video list) |
-| **Settings** | Integration status, YouTube quota per key, Meta usage (Instagram + Facebook), Groq AI usage per key, Meta token health |
+| **Video Performance → Tracking Library** | **Tracked videos** (table, filters, history, bulk actions) and **Uploads** (each uploaded video list). **Upload Videos** takes an Excel / CSV file, a single link, or **multiple video links** pasted as one batch |
+| **Settings** | Integration status, YouTube quota per key, Meta usage (Instagram), Apify usage (Instagram and Facebook), Groq AI usage per key, Meta token health |
 
 The frontend calls only the backend (`NEXT_PUBLIC_API_URL`) and holds no secrets.
 
@@ -247,7 +255,7 @@ Restart the backend to run migration `0006_apify_reels`. It adds nullable source
 - **Apify first** for reels without a known owner (Meta can only find a reel through its owner), and for every reel **while Meta is paused** by its hourly limit or the 80% safety stop. Reels already waiting for Meta are handed to Apify within about 5 minutes, once each.
 - **Back to Meta** after Meta's reset: whatever still waits is continued by Meta, and new reels with an owner use Meta first again.
 - If Apify cannot take a reel (monthly limit, no credits, throttled, cannot read it), **Meta** tries it. A reel Apify already failed for is marked and waits for Meta's reset instead of being billed again.
-- Instagram profiles (Creator Analytics), posts and Facebook videos use Meta only. Without an Apify token, or with the flag off, everything uses Meta.
+- Instagram profiles (Creator Analytics) and posts use Meta only. Without an Apify token, or with the flag off, all Instagram data uses Meta.
 
 Normal per-video Refresh/Retry, bulk actions and Dashboard Run now use this same tracker. `VIDEO_TRACKING_AUTO_REFRESH` remains **false by default**; enabling Apify does not enable recurring refresh. Explicitly enabling daily metrics refresh will consume units per Reel per run. Paused/completed records retain the existing scheduling rules, including explicit manual refresh of paused videos.
 
@@ -279,7 +287,7 @@ One active provider reservation per video prevents duplicate billable jobs acros
 
 Alternatively, use `remote_run_id: null` **only after verifying no remote run is active** to release duplicate suppression. This does not refund usage units or start a scrape. Then Retry the affected records. Normal users do not need to use Apify Console; this is exceptional operator recovery for an ambiguous submission. Failed/unknown jobs do not enter Meta's automatic rate-limit queue. Private/deleted/restricted Reels, hidden counts, Actor schema changes and Apify access/credit limits can still prevent retrieval.
 
-**Optional live smoke test (consumes Apify credits):** after installing requirements and restarting/migrating, check Settings, then Add video with one real public Reel URL (for example your supplied `https://www.instagram.com/reel/Dd9E0uFRFW4/`) and leave username empty. If it already exists, Edit its original link if necessary and use Retry/Refresh instead of adding a duplicate. Watch the existing row progress to Tracking/Partial or an actionable error. Verify Current Views, Last Checked, source metric and History. A second same-day refresh creates another check but does not invent a previous-day value. Inspect the saved remote run ID and Settings usage. No live request is required or performed by automated tests; mock test success does not prove that this real Reel is accessible.
+**Optional live smoke test (consumes Apify credits):** after installing requirements and restarting/migrating, check Settings, then Upload Videos > Single video link with one real public Reel URL (for example your supplied `https://www.instagram.com/reel/Dd9E0uFRFW4/`) and leave username empty. If it already exists, Edit its original link if necessary and use Retry/Refresh instead of adding a duplicate. Watch the existing row progress to Tracking/Partial or an actionable error. Verify Current Views, Last Checked, source metric and History. A second same-day refresh creates another check but does not invent a previous-day value. Inspect the saved remote run ID and Settings usage. No live request is required or performed by automated tests; mock test success does not prove that this real Reel is accessible.
 
 Validation from `backend`: `python -m pytest -q`; the suite includes `tests/test_apify_reels.py` and `tests/test_bug_fixes.py::test_models_and_migrations_are_in_sync`. To apply manually: `python -m alembic upgrade head`. From `frontend`: `npx tsc --noEmit` and `npm run lint` (on Windows with restricted PowerShell scripts, use `npx.cmd`/`npm.cmd`). All Apify tests use synthetic responses via mocked HTTP transports and never consume real credits.
 
@@ -288,7 +296,7 @@ The remaining owner-resolution instructions in this section describe the **Meta 
 **Tracking Library → Upload Excel**:
 - **Columns:** `Video Link` is required. `Creator Name`, `Platform` and `Username` are optional. Apify-enabled direct Instagram Reels need no username. The Meta path needs a known posting account when automatic owner resolution cannot find it.
 - **Example:** `backend/samples/sample_videos.xlsx`.
-- **Single videos:** use **Add video** instead.
+- **Single videos or pasted links:** use the **Single video link** or **Multiple video links** tab of **Upload Videos**.
 
 **Tracking Library → Uploads** lists every uploaded video list. Each one can be:
 - **viewed**: its tracked videos, plus the invalid rows and why they were skipped;
@@ -300,7 +308,7 @@ The remaining owner-resolution instructions in this section describe the **Meta 
 **Supported links:**
 - YouTube videos and Shorts;
 - Instagram reels/posts;
-- your Page's Facebook videos and reels, including share links.
+- public Facebook videos and reels of any Page, including share links.
 
 **Refreshing numbers:** views are fetched when a video is first added. After that they change only when you ask:
 - **Refresh** on a video in the Tracking Library updates that video and its history;
@@ -336,7 +344,7 @@ A wrong unverified username (for example, a collab participant instead of the or
 
 To recover upload `68f49e47ea214a6e962a33ef5b43ecb0`, restart the backend, open its videos from Tracking Library > Uploads, and supply each posting account's username for videos **193-202** using Edit, or re-upload the same links with a `Username` column. Ownerless eligible records are enriched and queued without duplicating videos or moving them out of the original upload. If metadata is already available through linked creators, Retry each affected video or select them and Refresh. Check for **Tracking** plus saved views, **Partial** when views are unavailable, or an actionable failure reason. Re-importing alone cannot resolve a bare Reel whose owner remains unknown.
 
-**Meta's hourly limit (large uploads):** Meta allows a limited number of calls per rolling hour for Instagram and Facebook together. Every Graph call, in both modules, first checks three things:
+**Meta's hourly limit (large uploads):** Meta allows a limited number of calls per rolling hour for Instagram. Every Graph call, in both modules, first checks three things:
 - the app's own count of Meta calls in the last hour, against `META_HOURLY_CALL_BUDGET` (default 180);
 - Meta's own usage report from its response headers, against `META_USAGE_STOP_PERCENT` (default 80%);
 - whether Meta recently answered "rate limit reached".
@@ -391,7 +399,7 @@ Each check stores a snapshot with views, likes and comments.
 
 | Field | Calculation |
 | --- | --- |
-| **Current Views** | Views from the API at the latest check. Facebook: `total_video_views`, or the Reels play count for reels |
+| **Current Views** | Views from the API at the latest check. Facebook: `views` from Apify, or `plays` when Facebook shows no views. **≈** marks a rounded public figure |
 | **Previous Views** | Views of the latest snapshot taken **before today** (in `VIDEO_TRACKING_TIMEZONE`) |
 | **Views Gained** | `current views − previous views` (day-over-day) |
 | **Growth %** | `views gained / previous views × 100` |
@@ -429,7 +437,7 @@ If Apify uploads fail immediately with a database-preparation error, run `python
 | Instagram: "Instagram Login token" | Generate a Facebook Login / System User `EAA…` token (section 4) |
 | Instagram: "cannot access your Instagram Business account" | The token is not linked to `META_IG_BUSINESS_ACCOUNT_ID`. Check the ID and the token's assets |
 | Instagram: "not a Professional account" | Expected for personal/private accounts; the official API cannot read them |
-| Facebook video **Unsupported** | Only videos of `META_FACEBOOK_PAGE_ID` can be read |
+| Facebook video **Video Down** | Facebook shows no public metrics for it: private, deleted, login-restricted or region-limited. Use **Retry** to check again |
 | "Cannot reach the backend" | Start the backend and check `NEXT_PUBLIC_API_URL`, then restart the frontend |
 | CORS error in the browser | Add the frontend origin to `CORS_ORIGINS` |
 | A row failed temporarily | **⋮ → Retry** on that row |

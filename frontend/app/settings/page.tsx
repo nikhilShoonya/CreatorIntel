@@ -3,7 +3,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, Cpu, Loader2, Sparkles, XCircle } from "lucide-react";
 
-import { ApifyUsageCard, useApifyUsage } from "@/components/layout/ApifyUsageCard";
+import { ApifyUsageCard, FacebookApifyUsageCard, useApifyUsage } from "@/components/layout/ApifyUsageCard";
 import { GroqUsageCard, InstagramUsageCard, tokenSummary, useInstagramToken, YouTubeQuotaCard } from "@/components/layout/TokenHealth";
 import { USER_NAME_KEY } from "@/components/layout/Topbar";
 import { Button, Card, ErrorBanner } from "@/components/ui/controls";
@@ -100,7 +100,7 @@ export default function SettingsPage() {
   const missingPermissions = token?.missing_permissions.length ? `Missing permissions: ${token.missing_permissions.join(", ")}` : null;
   const instagramTone: Tone = !config?.instagram_configured ? "off" : tokenProblem || missingPermissions || config.warnings.length ? "warn" : "ok";
   const usageCount = config
-    ? [config.youtube_configured, config.instagram_configured, Boolean(apify?.configured), config.ai_configured].filter(Boolean).length
+    ? [config.youtube_configured, config.instagram_configured, Boolean(apify?.configured), config.facebook_configured, config.ai_configured].filter(Boolean).length
     : 0;
 
   return (
@@ -138,10 +138,10 @@ export default function SettingsPage() {
             />
             <Connection
               icon={<PlatformIcon platform="facebook" size={20} />}
-              name="Facebook"
-              tone={config.facebook_configured ? "ok" : "off"}
-              detail="Videos and reels on your own Facebook Page"
-              envVar="META_FACEBOOK_PAGE_ID"
+              name="Facebook Apify Metrics Scraper"
+              tone={config.facebook_configured ? "ok" : config.facebook_apify_enabled ? "warn" : "off"}
+              detail={config.facebook_apify_enabled && !config.facebook_configured ? "Enabled, but APIFY_API_TOKEN is missing" : "Public reels and videos of any Facebook Page"}
+              envVar="APIFY_FACEBOOK_ENABLED"
             />
             <Connection
               icon={<Sparkles size={20} className="text-pink-500" />}
@@ -172,6 +172,7 @@ export default function SettingsPage() {
             {config.youtube_configured && <YouTubeQuotaCard />}
             {config.instagram_configured && <InstagramUsageCard />}
             <ApifyUsageCard />
+            <FacebookApifyUsageCard />
             {config.ai_configured && <GroqUsageCard />}
           </div>
         </Section>
